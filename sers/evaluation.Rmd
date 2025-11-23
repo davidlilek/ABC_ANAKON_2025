@@ -1,0 +1,367 @@
+---
+output:
+  html_document:
+    df_print: paged
+    fig.align: center
+    self_contained: yes 
+    fig.height: 4
+    fig.width: 8
+    theme: united
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+    number_sections: yes
+    code_folding: hide
+title: "SERS results"
+author: "David Lilek"
+date: "`r format(Sys.time(), '%d %B %Y, %X')`"
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r message=TRUE, warning=FALSE}
+library(readr)
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+library(pheatmap)
+library(tibble)
+library(ggpattern)
+library(patchwork)
+
+```
+
+# fig4 - results sers
+
+```{r}
+
+data <- read.csv("hl540_hl428_results_split.csv")
+df <- data
+
+plotA <- ggplot(df, aes(x = sample, y = median_peak_height, fill = sample)) +
+  geom_boxplot(alpha = 0.7) +
+  labs(title = "A: Median Peak Height", x = "", y = "Median Peak Height") +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "none",
+        plot.title = element_blank())
+
+# Plot B: Number of Peaks
+plotB <- ggplot(df, aes(x = sample, y = no_peaks, fill = sample)) +
+  geom_boxplot(alpha = 0.7) +
+  labs(title = "B: Number of Peaks", x = "", y = "No. of Peaks") +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "none",
+        plot.title = element_blank())
+
+#plotA + plotB
+
+combined_plot <- plotA + plotB
+
+combined_plot
+
+# long format
+df_long <- df %>%
+  select(sample, comparison, logl1, gdbt) %>%
+  pivot_longer(
+    cols = c(logl1, gdbt),
+    names_to = "model",
+    values_to = "AUC"
+  )
+
+df_long$sample <- factor(df_long$sample, levels = c("L-540", "L-428"))
+
+# colors cell lines
+colors <- c("L-540" = "#F8766D", "L-428" = "#00BFC4")
+
+# patterns
+patterns <- c("logl1" = "none", "gdbt" = "stripe")
+
+# Plot
+plot_auc <- ggplot(df_long, aes(x = comparison, y = AUC, 
+                    fill = sample, pattern = model, group = interaction(sample, model))) +
+  geom_col_pattern(
+    position = position_dodge(width = 0.8),
+    width = 0.7,
+    color = "black",
+    pattern_density = 0.25,
+    pattern_spacing = 0.05,
+    pattern_alpha = 0.5,
+    alpha = 0.9,
+    show.legend = c(fill = TRUE, pattern = TRUE, pattern_fill = FALSE, pattern_colour = FALSE)
+  ) +
+  scale_fill_manual(values = colors) +
+  scale_pattern_manual(values = patterns) +
+  labs(
+    x = "Comparison",
+    y = "AUC",
+    fill = "Sample",
+    pattern = "Model"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right",
+    panel.grid.major.x = element_blank()
+  ) + 
+  coord_cartesian(ylim = c(0.7, 1))
+
+
+
+
+```
+
+```{r}
+# adjust main folder
+main_path <- "/proj/raman/Zimmermann_RamanMachineLearning/results/"
+
+# get all folders starting with abc_hl
+folders <- list.dirs(main_path, recursive = FALSE, full.names = TRUE)
+folders <- folders[grepl("^.*/abc_hl", folders)]
+
+# read function
+read_ct_results <- function(folder) {
+  # path logreg_l1  gbdt
+  logreg_path <- file.path(folder, "regularized_models/logreg_l1/ct_results.csv")
+  gbdt_path   <- file.path(folder, "tree_based_models/gbdt/ct_results.csv")
+  
+  results <- list()
+  
+  # try to read data
+  if (file.exists(logreg_path)) {
+    df_logreg <- read_csv(logreg_path, show_col_types = FALSE)
+    df_logreg$model <- "logl1"
+    results$logreg <- df_logreg
+  }
+  if (file.exists(gbdt_path)) {
+    df_gbdt <- read_csv(gbdt_path, show_col_types = FALSE)
+    df_gbdt$model <- "gdbt"
+    results$gbdt <- df_gbdt
+  }
+  
+  # combine results
+  df_all <- bind_rows(results)
+  
+  # get names
+  df_all$folder <- basename(folder)
+  
+  return(df_all)
+}
+
+# save it to a list
+all_results_list <- lapply(folders, read_ct_results)
+
+# transform to dataframe
+all_results_df <- bind_rows(all_results_list)
+
+all_results_filtered <- all_results_list %>%
+  map(~ .x %>%
+        select(any_of(c("test_accuracy", "model", "folder")))) %>%
+  bind_rows()
+
+all_results_filtered <- all_results_filtered %>%
+  mutate(folder = str_sub(folder, 5))
+
+# get sample and comparison names
+df_plot <- all_results_filtered %>%
+  mutate(
+    sample = str_extract(folder, "^hl\\d+"),
+    comparison = sub("^[^_]+_", "", folder)
+  ) %>%
+  filter(!is.na(test_accuracy), !is.na(sample), !is.na(model), !is.na(comparison))
+
+# calculate median
+df_med <- df_plot %>%
+  group_by(comparison, sample, model) %>%
+  summarise(median_acc = median(test_accuracy, na.rm = TRUE), .groups = "drop")
+
+df_med <- df_med %>%
+  mutate(
+    # sample renaming
+    sample = case_when(
+      sample == "hl428" ~ "L-428",
+      sample == "hl540" ~ "L-540",
+      TRUE ~ sample
+    ),
+    # comparison renaming
+    comparison = case_when(
+      comparison == "c_both" ~ "C_vs_RE",
+      comparison == "c_e" ~ "C_vs_E",
+      comparison == "c_r" ~ "C_vs_R",
+      comparison == "e_both" ~ "E_vs_RE",
+      comparison == "e_r" ~ "E_vs_R",
+      comparison == "r_both" ~ "R_vs_RE",
+      TRUE ~ comparison
+    )
+  )
+
+# color settings
+colors <- c("L-428" = "#00BFC4", "L-540" = "#F8766D")
+
+# patterns for models
+patterns <- c("logl1" = "none", "gdbt" = "stripe")
+
+# barplot
+plot_acc <- ggplot(
+  df_med,
+  aes(
+    x = comparison,
+    y = median_acc,
+    fill = sample,
+    pattern = model,
+    group = interaction(sample, model)
+  )
+) +
+  geom_col_pattern(
+    position = position_dodge(width = 0.8),
+    width = 0.7,
+    color = "black",
+    alpha = 0.9,
+    pattern_density = 0.25,
+    pattern_spacing = 0.05,
+    pattern_alpha = 0.5,
+    show.legend = c(fill = TRUE, pattern = TRUE, pattern_fill = FALSE, pattern_colour = FALSE)
+  ) +
+  scale_fill_manual(values = colors, breaks = c("hl540","hl428")) +
+  scale_pattern_manual(values = patterns, breaks = c("logl1","gdbt")) +
+  labs(
+    x = "Comparison",
+    y = "Median Train Accuracy",
+    fill = "Sample",
+    pattern = "Model"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right",
+    panel.grid.major.x = element_blank()
+  ) +
+  coord_cartesian(ylim = c(0.6, 1))
+
+```
+
+```{r}
+combined_plot <- plot_auc + plot_acc + plot_layout(guides = "collect")
+combined_plot & theme(legend.position = "bottom")
+
+```
+
+
+# fig5 - heatmap
+
+```{r}
+# ------------------ Data preparation ------------------
+data <- read.csv2("/proj/raman/11_abc/coefficients_summarized_upload (2).csv",
+                  nrows = 211)[, 1:14]
+
+data <- data %>%
+  filter(!is.na(X) & ready != "no")
+
+data$wavenumber.range <- paste(data$wavenumber.range,data$summarized.shortened, sep = " ")
+data$wavenumber.range <- factor(data$wavenumber.range, levels = unique(data$wavenumber.range))
+
+df <- data %>%
+  select(wavenumber.range, name, y, type.new) %>%
+  group_by(wavenumber.range, name) %>%
+  summarise(y = mean(y, na.rm = TRUE),  
+            type.new = first(type.new),  
+            .groups = "drop") %>%
+  mutate(
+    sign = case_when(
+      type.new == "positive" ~ "pos",
+      type.new == "negative" ~ "neg",
+      TRUE ~ "neutral"
+    ),
+    strength = cut(abs(y),
+                   breaks = c(0, 0.10, 0.30, 0.80, Inf),
+                   labels = c("weak", "medium", "strong", "very strong"),
+                   right = FALSE,
+                   include.lowest = TRUE),
+    strength = factor(strength,
+                      levels = c("weak", "medium", "strong", "very strong"),
+                      ordered = TRUE),
+    combo = interaction(sign, strength, drop = FALSE, sep = " ")
+  )
+
+# ------------------ Color definition ------------------
+pal_neg <- c("weak" = "#dce9f2", "medium" = "#a6cbe3", "strong" = "#679ac9", "very strong" = "#2b6aa6")
+pal_pos <- c("weak" = "#fde5d9", "medium" = "#fcbba1", "strong" = "#fb6a4a", "very strong" = "#cb181d")
+
+levs <- levels(df$combo)
+lvl_to_strength <- sub("^.* ", "", levs)
+colmap <- setNames(
+  ifelse(grepl("^neg ", levs),
+         pal_neg[lvl_to_strength],
+         pal_pos[lvl_to_strength]),
+  levs
+)
+
+# remove non-relevant rows
+id_remove <- c(4:13, 25, 29, 31:32, 41, 56:61, 64:65, 71, 79:83, 85:87, 99:101, 105:108, 110, 127:133, 148:152, 155,160:164)
+
+df_clear <- df[-id_remove,]
+
+
+df_clear <- df_clear %>%
+  mutate(
+    name = case_when(
+      name == "hl428 c_both" ~ "L-428 C_vs_RE",
+      name == "hl540 c_both" ~ "L-540 C_vs_RE",
+      name == "hl428 c_e"    ~ "L-428 C_vs_E",
+      name == "hl540 c_e"    ~ "L-540 C_vs_E",
+      name == "hl428 c_r"    ~ "L-428 C_vs_R",
+      name == "hl540 c_r"    ~ "L-540 C_vs_R",
+      name == "hl428 e_both" ~ "L-428 E_vs_RE",
+      name == "hl540 e_both" ~ "L-540 E_vs_RE",
+      name == "hl428 e_r"    ~ "L-428 E_vs_R",
+      name == "hl540 e_r"    ~ "L-540 E_vs_R",
+      name == "hl428 r_both" ~ "L-428 R_vs_RE",
+      name == "hl540 r_both" ~ "L-540 R_vs_RE",
+      TRUE ~ name
+    )
+  )
+
+ggplot(df_clear, aes(x = name, y = wavenumber.range, fill = combo)) +
+  geom_tile(color = "white", linewidth = 0.8) +
+  scale_fill_manual(
+    values = colmap,
+    breaks = c(interaction("neg", levels(df$strength), sep = " "),
+               interaction("pos", levels(df$strength), sep = " ")),
+    labels = c(paste("neg ", levels(df$strength)),
+               paste("pos ", levels(df$strength))),
+    name = ""
+  ) +
+  scale_y_discrete(
+    position = "left",  
+    expand = expansion(mult = c(0.02, 0.02))
+  ) +
+  coord_fixed(ratio = 0.5) +
+  labs(x = NULL, y = NULL) +
+  theme_minimal(base_size = 10) +
+  theme(
+    panel.grid = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_line(color = "grey90", linewidth = 0.4),
+    
+    legend.position = "right",
+    legend.box = "horizontal",
+    legend.key.height = unit(5, "mm"),
+    legend.key.width = unit(10, "mm"),
+    
+    # ---- Y-axis labels ----
+    axis.text.y.left = element_text(size = 7, hjust = 1),  
+    axis.ticks.y.left = element_line(),
+    axis.text.y.right = element_blank(),
+    axis.ticks.y.right = element_blank(),
+    axis.title.y.left = element_blank(),
+    
+    # ---- X-axis ----
+    axis.text.x = element_text(angle = 90, hjust = 1)
+  ) 
+```
+
+
+
+
