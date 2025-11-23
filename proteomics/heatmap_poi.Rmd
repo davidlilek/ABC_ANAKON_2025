@@ -1,0 +1,258 @@
+---
+output:
+  html_document:
+    df_print: paged
+    fig.align: center
+    self_contained: yes 
+    fig.height: 4
+    fig.width: 8
+    theme: united
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+    number_sections: yes
+    code_folding: hide
+title: "DEP proteins of interest"
+author: "David Lilek"
+date: "`r format(Sys.time(), '%d %B %Y, %X')`"
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r message=FALSE, warning=FALSE}
+#####################
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(purrr)
+library(clusterProfiler)
+library(tidyr)
+library(pheatmap)
+library(tibble)
+```
+
+```{r}
+proteins_of_interest <- c(
+  "PDCD4",
+  "LGALS1",
+  "LGALS3",
+  "LGALSL", #replaced galectin by the gene name
+  "CCL17",
+  "BCCIP",
+  "CDC42",
+  "CDC37",
+  "CDC38",
+  "CCD86",
+  "LPXN",
+  "PAX",
+  "CYTB",
+  "SWI/SNF",
+  "NFKB1",
+  "TNFAIP8",
+  "ST13",
+  "NEUA",
+  "CYC1",
+  "PDCD5",
+  "PDCD6",
+  "PDCD6IP",
+  "SERPINB6",
+  "CD63",
+  "CD70",
+  "LCA",
+  "NUDC",
+  "BAG6",
+  "BCLAF1",
+  "JAK",
+  "STAT6",
+  "STAT3",
+  "STAT5A",
+  "STAT1",
+  "NUDT5",
+  "PRCP",
+  "SMARCC2",
+  "BANF1",
+  "BAF", # added baf because BANF1 = BAF is not possible
+  "MANF",
+  "NENF",
+  "DDB1",
+  "ARMT1",
+  "FEN1",
+  "APEX1",
+  "PAFAH1B1",
+  "EEF1E1",
+  "HDGF",
+  "GRB2",
+  "MYDGF",
+  "OGFR",
+  "CCAR1",
+  "CCAR2",
+  "AIFM1",
+  "API5",
+  "ACIN1",
+  "RBM4",
+  "SDHB",
+  "PURA",
+  "SDHA",
+  "DLST",
+  "SUCLG1",
+  "OXCT1",
+  "OGDH",
+  "SUCLG2",
+  "SUCLA2",
+  "ALDH",
+  "SOD2",
+  "MCM2",
+  "ACY1",
+  "GATM",
+  "HEATR",
+  "NUP210",
+  "NUP214",
+  "VDAC1",
+  "VDAC2",
+  "VDAC3",
+  "BCCP",
+  "HK2",
+  "HK1",
+  "PARP1",
+  "PARP4",
+  "H2AFX",
+  "PCYT1A",
+  "HSPA1B",
+  "CASP3",
+  "SLC4A7",
+  "EPS15L1",
+  "KCNAB2",
+  "TNFRSF8",
+  "CCBL2",
+  "GAR1"
+)
+
+```
+
+
+```{r}
+
+# define groups
+part1 <- c("C_vs_E", "C_vs_RE", "C_vs_R", "E_vs_R", "E_vs_RE", "R_vs_RE")
+
+# path and names of dataset
+ds <- list(
+  "L-540 cryo" = "/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/raw_log2FCdata/hl540_cryo/",
+  "L-540 liv"  = "/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/raw_log2FCdata/hl540_le/",
+  "L-428"      = "/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/raw_log2FCdata/hl428_all/"
+)
+
+read_one_set <- function(label, path){
+  files <- list.files(path, pattern="\\.csv$", full.names=TRUE)
+  if (length(files) == 0) return(NULL)
+  dl <- lapply(files, read.csv)
+  names(dl) <- part1[seq_along(dl)]
+  bind_rows(dl, .id="treatment") |>
+    filter(Gene.name %in% proteins_of_interest) |>
+    mutate(dataset = label,
+           treatment = factor(treatment, levels = part1))
+}
+
+final_df <- map2(names(ds), ds, read_one_set) |> list_rbind()
+
+# maximum logFC-values
+final_df$logFC[!is.na(final_df$logFC) & final_df$logFC >  4] <-  4
+final_df$logFC[!is.na(final_df$logFC) & final_df$logFC < -4] <- -4
+
+# Unique column ID + **Display name: Treatment only**
+final_df <- final_df |>
+  mutate(
+    col_id     = paste0(dataset, " | ", treatment),
+    col_display = treatment)
+
+# color matrix
+mat_fc <- final_df |>
+  select(Gene.name, col_id, logFC, dataset, treatment, col_display) |>
+  distinct() |>
+  arrange(dataset, treatment) |>
+  select(Gene.name, col_id, logFC) |>
+  pivot_wider(names_from = col_id, values_from = logFC) |>
+  column_to_rownames("Gene.name") |>
+  as.matrix()
+
+mat_fc[is.na(mat_fc)] <- 0
+mat_fc <- mat_fc[order(rownames(mat_fc)), , drop=FALSE]
+
+# significance matrix
+mat_sig <- final_df |>
+  mutate(Significant = case_when(
+    adj.P.Val < 0.001 ~ "\u2731\u2731\u2731", # asterix; the common * is too large
+    adj.P.Val < 0.01  ~ "\u2731\u2731",
+    adj.P.Val < 0.05  ~ "\u2731",
+    adj.P.Val < 0.1   ~ ".",
+    TRUE              ~ " "
+  )) |>
+  select(Gene.name, col_id, Significant, dataset, treatment) |>
+  distinct() |>
+  arrange(dataset, treatment) |>
+  select(Gene.name, col_id, Significant) |>
+  pivot_wider(names_from = col_id, values_from = Significant) |>
+  column_to_rownames("Gene.name") |>
+  as.matrix()
+
+mat_sig[is.na(mat_sig)] <- " "
+
+
+# annotation 4 columns
+annot_col <- final_df |>
+  distinct(col_id, dataset, treatment, col_display) |>
+  arrange(dataset, treatment) |>
+  tibble::column_to_rownames("col_id")
+
+# color scale and define gaps
+rng <- 4
+breaks <- seq(-rng, rng, length.out = 101)
+col_palette <- colorRampPalette(c("blue", "white", "red"))(length(breaks))
+col_gaps <- c(6, 12)                  
+
+
+# names have to be added manual
+anno_cols <- list(
+  dataset = c(
+    "L-540 cryo" = "#D9D9D9",  
+    "L-540 liv"  = "#D9D9D9",  
+    "L-428"      = "#D9D9D9"   
+  )
+)
+
+
+
+pheatmap(
+  mat_fc,
+  color = col_palette,
+  breaks = breaks,
+  border_color = NA,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  display_numbers = mat_sig,
+  number_color = "#00000080",
+  fontsize_number = 3,
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  labels_col = annot_col$col_display,      
+  annotation_col = annot_col[, c("dataset"), drop = FALSE],
+  annotation_colors = anno_cols,
+  annotation_legend = FALSE,
+  annotation_names_col = TRUE,
+  gaps_col = col_gaps,
+  gaps_row = c(10,20,30,40,50,60,70),
+  fontsize_row = 4.65,
+  fontsize_col = 6,
+  cellheight = 3.75,      
+  cellwidth  = 12,
+  fontsize = 6
+)
+
+
+```
+
+
+
+
+

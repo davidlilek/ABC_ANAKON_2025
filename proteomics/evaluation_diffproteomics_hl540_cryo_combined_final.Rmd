@@ -1,0 +1,1914 @@
+---
+output:
+  html_document:
+    df_print: paged
+    fig.align: center
+    self_contained: yes 
+    fig.height: 4
+    fig.width: 8
+    theme: united
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+    number_sections: yes
+    code_folding: hide
+title: "DEP HL540 cryo"
+author: "David Lilek"
+date: "`r format(Sys.time(), '%d %B %Y, %X')`"
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# Proteins of Interest
+
+```{r}
+proteins_of_interest <- c(
+  "PDCD4",
+  "LGALS1",
+  "LGALS3",
+  "LGALSL", #replaced galectin by the gene name
+  "CCL17",
+  "BCCIP",
+  "CDC42",
+  "CDC37",
+  "CDC38",
+  "CCD86",
+  "LPXN",
+  "PAX",
+  "CYTB",
+  "SWI/SNF",
+  "NFKB1",
+  "TNFAIP8",
+  "ST13",
+  "NEUA",
+  "CYC1",
+  "PDCD5",
+  "PDCD6",
+  "PDCD6IP",
+  "SERPINB6",
+  "CD63",
+  "CD70",
+  "LCA",
+  "NUDC",
+  "BAG6",
+  "BCLAF1",
+  "JAK",
+  "STAT6",
+  "STAT3",
+  "STAT5A",
+  "STAT1",
+  "NUDT5",
+  "PRCP",
+  "SMARCC2",
+  "BANF1",
+  "BAF", # added baf because BANF1 = BAF is not possible
+  "MANF",
+  "NENF",
+  "DDB1",
+  "ARMT1",
+  "FEN1",
+  "APEX1",
+  "PAFAH1B1",
+  "EEF1E1",
+  "HDGF",
+  "GRB2",
+  "MYDGF",
+  "OGFR",
+  "CCAR1",
+  "CCAR2",
+  "AIFM1",
+  "API5",
+  "ACIN1",
+  "RBM4",
+  "SDHB",
+  "PURA",
+  "SDHA",
+  "DLST",
+  "SUCLG1",
+  "OXCT1",
+  "OGDH",
+  "SUCLG2",
+  "SUCLA2",
+  "ALDH",
+  "SOD2",
+  "MCM2",
+  "ACY1",
+  "GATM",
+  "HEATR",
+  "NUP210",
+  "NUP214",
+  "VDAC1",
+  "VDAC2",
+  "VDAC3",
+  "BCCP",
+  "HK2",
+  "HK1",
+  "PARP1",
+  "PARP4",
+  "H2AFX",
+  "PCYT1A",
+  "HSPA1B",
+  "CASP3",
+  "SLC4A7",
+  "EPS15L1",
+  "KCNAB2",
+  "TNFRSF8",
+  "CCBL2",
+  "GAR1"
+)
+
+```
+
+
+
+# Load Libraries & Plot function & Colors
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# load libaries
+library(DEqMS)
+library(matrixStats)
+library(ggrepel)
+library(ggplot2)
+library(ggpubr)
+library(rrcovNA)
+library(DT)
+library(limma)
+library(pcaMethods) 
+library(clusterProfiler)
+library(org.Hs.eg.db)
+libraries <- c(
+  "tidyverse", "magrittr", "readxl", "stringr", "MSstats",
+  "SummarizedExperiment", "MsCoreUtils", "DEqMS", "qvalue", "ggrepel",
+  "RColorBrewer",
+  "patchwork", "vsn", "ggforce"
+)
+
+lapply(libraries, library, character.only = TRUE)
+```
+
+```{r}
+extract_gene_names <- function(fasta_headers) {
+  sapply(fasta_headers, function(x) {
+    if (is.na(x) || x == "") return(NA_character_)  # leere oder NA-Zeilen behandeln
+    
+    # alle GN=... Treffer finden
+    genes <- unlist(regmatches(x, gregexpr("GN=([^ ]+)", x)))
+    if (length(genes) == 0) return(NA_character_)  # kein GN gefunden
+    
+    # "GN=" entfernen
+    genes <- gsub("GN=", "", genes)
+    
+    # Duplikate entfernen und zusammenführen
+    paste(unique(genes), collapse = ";")
+  })
+}
+
+```
+
+# Functions
+
+```{r}
+run_deqms_pipeline <- function(protein.matrix, design, pep.count.table,
+                               contrast_string = "classC-classE",
+                               main_title = "Label-free dataset") {
+  
+  # Schritt 1: Lineares Modell fitten
+  fit1 <- limma::lmFit(protein.matrix, design = design)
+  
+  # Schritt 2: Kontraste definieren
+  cont <- limma::makeContrasts(contrasts = contrast_string, levels = design)
+  fit2 <- limma::contrasts.fit(fit1, contrasts = cont)
+  
+  # Schritt 3: Empirisches Bayes-Modell
+  fit3 <- limma::eBayes(fit2)
+  fit3$sigma[which(fit3$sigma == 0)] <- 1e-14
+  
+  # Schritt 4: Peptidanzahl hinzufügen
+  fit3$count <- pep.count.table[rownames(fit3$coefficients), "count"]
+  
+  
+  
+  # Validierung
+  if (any(is.na(fit3$count)) || min(fit3$count, na.rm = TRUE) <= 0) {
+    stop("Fehler: Mindestens ein Wert in 'pep.count.table$count' ist NA oder <= 0. Bitte prüfen.")
+  }
+  
+  # Schritt 5: DEqMS: Modifikation mit Peptidanzahl
+  fit4 <- DEqMS::spectraCounteBayes(fit3)
+  
+  # Schritt 6: Visualisierung
+  DEqMS::VarianceBoxplot(fit4, n = 20,
+                         main = main_title,
+                         xlab = "peptide count + 1")
+  
+  return(fit4)
+}
+
+```
+
+
+
+```{r}
+#' Plot Volcano
+#'
+#' This function creates a volcano plot of differential expression results.
+#'
+#' @param res A data frame containing differential expression results.
+#' @param title A character string specifying the title of the plot.
+#' @param lfc_limit A numeric value specifying the limit for log fold change.
+#' @return A volcano plot.
+#' @import dplyr
+#' @import ggplot2
+#' @import ggrepel
+#' @export
+#'
+#' @examples
+#' # Example usage:
+#' # plot_volcano(res, title = "Volcano Plot")
+plot_volcano <- function(res, title = "", lfc_limit = NA) {
+  res.plot <- res %>%
+    filter(!is.na(adj.P.Val)) %>%
+    arrange(adj.P.Val) %>%
+    rowwise() %>%
+    mutate(threshold = adj.P.Val < 0.05 & abs(logFC) > 1.0,
+           out_of_bounds = ifelse(is.na(lfc_limit), 0, (abs(logFC) > lfc_limit) * sign(logFC)),
+           logFC_capped = ifelse(out_of_bounds != 0, lfc_limit * sign(logFC), logFC)) %>%
+    ungroup()
+  
+  res.sig <- res %>%
+    filter(adj.P.Val < 0.05 & abs(logFC) >= 1)
+  
+
+  res.plot %<>% 
+    mutate(genelabels = ifelse(threshold, gene, ""))
+
+  
+  maxFC <- max(abs(res.plot$logFC))
+  if (!is.na(lfc_limit) && lfc_limit < maxFC) {
+    xlim <- lfc_limit
+  } else {
+    xlim <- maxFC * 1.04
+  }
+  
+  ggplot(res.plot, aes(x = logFC_capped, y = adj.P.Val)) +
+    geom_point(data = subset(res.plot, out_of_bounds == 0), aes(colour=threshold), alpha = 0.5) +
+    geom_point(data = subset(res.plot, out_of_bounds == -1), aes(colour=threshold), shape = "\u25c4", size=2) +
+    geom_point(data = subset(res.plot, out_of_bounds == 1), aes(colour=threshold), shape = "\u25BA", size=2) +
+    geom_hline(yintercept = 0.05, linetype = 2) +
+    geom_vline(xintercept = c(-1, 1), linetype = 2) +
+    #geom_text_repel(aes(label = genelabels)) +
+    scale_x_continuous(breaks = scales::pretty_breaks(), limits = c(-xlim, xlim), expand = expansion(0.01)) +
+    scale_y_continuous(trans = c("log10", "reverse"), breaks = scales::log_breaks(), labels = scales::scientific) +
+    ggtitle(title) +
+    xlab("log2 Fold Change") +
+    ylab("q-value") +
+    theme_minimal() +
+    theme(legend.position = "none")
+}
+```
+
+
+
+
+```{r}
+prepare_gene_list_for_gsea <- function(df,
+                                       symbol_col = "Gene.name",
+                                       logfc_col = "logFC",
+                                       orgdb = org.Hs.eg.db) {
+  # --- 1. Split Mehrfach-Gene (z. B. "NOMO2;NOMO3") ---
+  df_clean <- df %>%
+    mutate(!!symbol_col := str_split(.data[[symbol_col]], ";")) %>%
+    unnest(cols = all_of(symbol_col)) %>%
+    mutate(!!symbol_col := str_trim(.data[[symbol_col]])) %>%
+    filter(!is.na(.data[[symbol_col]]) & .data[[symbol_col]] != "")
+
+  # --- 2. Extrahiere logFC und Gene-Symbole ---
+  gene_symbols <- df_clean[[symbol_col]]
+  gene_logfc <- df_clean[[logfc_col]]
+  names(gene_logfc) <- gene_symbols
+
+  # --- 3. Entferne Duplikate & NAs ---
+  gene_logfc <- gene_logfc[!duplicated(names(gene_logfc))]
+  gene_logfc <- gene_logfc[!is.na(names(gene_logfc)) & !is.na(gene_logfc)]
+
+  # --- 4. Konvertiere SYMBOL → ENTREZID ---
+  converted <- bitr(names(gene_logfc),
+                    fromType = "SYMBOL",
+                    toType   = "ENTREZID",
+                    OrgDb    = orgdb)
+
+  # --- 5. Match logFC mit ENTREZIDs ---
+  gene_list <- gene_logfc[converted$SYMBOL]
+  names(gene_list) <- converted$ENTREZID
+
+  # --- 6. Sortiere fürs Ranking (GSEA) ---
+  gene_list <- sort(gene_list, decreasing = TRUE)
+
+  return(gene_list)
+}
+
+```
+
+```{r}
+plot_gsea_barplot <- function(gsea_result, title = "Top GSEA GO Terms", n = 15) {
+  # Konvertiere GSEA-Ergebnis zu DataFrame
+  df <- as.data.frame(gsea_result)
+
+  # Prüfen, ob Einträge vorhanden sind
+  if (nrow(df) == 0) {
+    warning("GSEA-Ergebnis enthält keine angereicherten GO-Terms.")
+    return(ggplot() + theme_void() + ggtitle(paste(title, "\n(no enrichment)")))
+  }
+
+  # Count = Anzahl Gene im core_enrichment
+  df <- df %>%
+    mutate(
+      Count = stringr::str_count(core_enrichment, "/") + 1,
+      Description_wrapped = stringr::str_wrap(Description, width = 40)
+    )
+
+  # Top n Terme nach adj. p-Wert anzeigen
+  top_df <- df %>%
+    arrange(p.adjust) %>%
+    slice_head(n = n)
+
+  # Barplot
+  ggplot(top_df,
+         aes(x = reorder(Description_wrapped, Count), y = Count, fill = p.adjust)) +
+    geom_bar(stat = "identity") +
+    coord_flip() +
+    scale_fill_gradient(
+      low = "red", high = "blue", trans = "reverse", name = "adj. p-value"
+    ) +
+    labs(
+      title = title,
+      x = "GO Term",
+      y = "Core Enrichment Gene Count"
+    ) +
+    theme_minimal(base_size = 12)
+}
+
+```
+
+
+```{r}
+safe_dotplot <- function(x, n = 20) {
+  if (nrow(as.data.frame(x)) > 0) {
+    dotplot(x, showCategory = min(n, nrow(as.data.frame(x))))
+  } else {
+    message("⚠️ Keine Kategorien zum Plotten.")
+  }
+}
+
+safe_ridgeplot <- function(x, n = 20) {
+  if (nrow(as.data.frame(x)) > 0) {
+    ridgeplot(x)
+  } else {
+    message("⚠️ Keine Kategorien zum Plotten.")
+  }
+}
+```
+
+# C vs E
+
+## diff proteomics
+
+```{r}
+df <- read.csv("./results_maxquant/hl540_cryo_galaxy.txt", sep = "\t")
+df.prot <- df
+# remove decoy matches and matches to contaminant
+df.prot = df.prot[!df.prot$Reverse=="+",]
+df.prot = df.prot[!df.prot$Potential.contaminant=="+",]
+df.prot = df.prot[!df.prot$Only.identified.by.site=="+",]
+
+#extract gene name via function
+df.prot$Gene.names <- extract_gene_names(df.prot$Fasta.headers)
+
+# Extract columns of LFQ intensites
+df.LFQ = df.prot[,c(260:262,266:271,272:277,278:283)]
+df.LFQ[df.LFQ==0] <- NA; print(colnames(df.LFQ))
+
+rownames(df.LFQ) = df.prot$Majority.protein.IDs
+
+df.LFQ <- t(df.LFQ)
+
+keep_cols <- colSums(!is.na(df.LFQ)) > 0
+removed_col_indices <- which(!keep_cols)
+
+
+# Entferne Spalten, in denen alle Werte NA sind
+df.LFQ.clean <- df.LFQ[, colSums(!is.na(df.LFQ)) > 0]
+
+df.LFQ.clean <- log2(df.LFQ.clean)
+
+
+result <- llsImpute(as.matrix(df.LFQ.clean), k = 10, correlation = "pearson", allVariables = TRUE)
+
+df.LFQ <- as.data.frame(completeObs(result))
+df.LFQ <- as.data.frame(t(df.LFQ))
+
+```
+
+```{r}
+df.LFQ$valid_A = apply(df.LFQ[, 1:9], 1, function(x) sum(!is.na(x)))
+df.LFQ$valid_B = apply(df.LFQ[,10:21], 1, function(x) sum(!is.na(x)))
+df.LFQ.filter = df.LFQ[df.LFQ$valid_A >= 1 | df.LFQ$valid_B >= 2, 1:21]
+
+print(colnames(df.prot[,c(59:61,65:70,71:76,77:82)]))
+# we use minimum peptide count among six samples
+# count unique+razor peptides used for quantification
+pep.count.table = data.frame(count = rowMins(as.matrix(df.prot[-removed_col_indices,c(59:61,65:70,71:76,77:82)])),
+                             row.names = df.prot$Majority.protein.IDs[-removed_col_indices])
+# Minimum peptide count of some proteins can be 0
+# add pseudocount 1 to all proteins
+pep.count.table$count = pep.count.table$count+1
+
+
+protein.matrix = as.matrix(df.LFQ.filter)
+
+class <- factor(c(rep("C", 9),  rep("E", 12)))          # C1-3, C4-9, E1-6, E7-12
+replicate <- factor(c(rep("rep1", 3), rep("rep2", 6),   # C1-3 = rep1, C4-9 = rep2
+                      rep("rep1", 6), rep("rep2", 6)))  # E1-6 = rep1, E7-12 = rep2
+
+# 2) Design ohne Interzept + Replikat als Kovariate (Batch)
+design <- model.matrix(~ 0 + class + replicate)
+colnames(design)[1:2] <- c("classC", "classE")          # optional, für saubere Namen
+
+# 3) Kontrast nur auf die Klassen
+cont <- limma::makeContrasts(classC - classE, levels = design)
+
+
+fit_result <- run_deqms_pipeline(protein.matrix, design, pep.count.table,
+                                 contrast_string = "classC-classE")
+
+DEqMS.results = outputResult(fit_result,coef_col = 1)
+# Add Gene names to the data frame
+rownames(df.prot) = df.prot$Majority.protein.IDs
+DEqMS.results$Gene.name = df.prot[DEqMS.results$gene,]$Gene.names
+
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+write.csv(DEqMS.results, file = paste0( "/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/raw_log2FCdata/hl540_cryo/data_", timestamp, ".csv"))
+
+
+# Verarbeiten
+processed_df <- DEqMS.results %>%
+  filter(!is.na(logFC)) %>%                                 # Schritt 1: NAs filtern
+  mutate(across(where(is.numeric), ~ round(.x, 3)))          # Schritt 2: Runden
+
+# Ausgabe
+datatable(processed_df, rownames = FALSE)
+
+# proteins of interest
+processed_df_interest <- processed_df %>%
+  filter(Gene.name %in% proteins_of_interest)
+
+datatable(processed_df_interest, rownames = FALSE,caption="proteins of interest")
+
+logFC <- 1.0
+
+sig_proteins <- DEqMS.results %>%
+  filter(sca.P.Value <= 0.05) %>%           # Schwelle: signifikant
+  filter(!is.na(logFC)) %>%                 # Sicherheitshalber NAs entfernen
+  mutate(across(where(is.numeric), ~ round(.x, 3)))  # Optional: runden
+
+sig_strong <- sig_proteins %>%
+  filter(abs(logFC) >= 1.0)
+
+DT::datatable(sig_strong, rownames = FALSE,
+              caption = "Stark regulierte Proteine (|logFC| ≥ 1.0 & sca.P.Value ≤ 0.05)")
+
+vp_lfc_limit <- 5
+plot_volcano(DEqMS.results, "C vs E", vp_lfc_limit)
+
+# Filtere signifikante Proteine
+sig <- DEqMS.results %>%
+  filter(sca.P.Value <= 0.05)
+
+# Anzahl stark hochreguliert
+n_up <- sum(sig$logFC >= 1.0, na.rm = TRUE)
+
+# Anzahl stark runterreguliert
+n_down <- sum(sig$logFC <= -1.0, na.rm = TRUE)
+
+# Gesamtanzahl stark reguliert (in beide Richtungen)
+n_total <- sum(abs(sig$logFC) >= 1.0, na.rm = TRUE)
+
+# Ausgabe
+cat("Stark hochreguliert (logFC ≥ 1.0):", n_up, "\n")
+cat("Stark runterreguliert (logFC ≤ -1.0):", n_down, "\n")
+cat("Gesamtzahl |logFC| ≥ 1.0:", n_total, "\n")
+```
+
+## gsea
+
+```{r}
+DEqMS.results$Gene.name <- df.prot[DEqMS.results$gene,]$Gene.names 
+
+gene_list <- prepare_gene_list_for_gsea(DEqMS.results)
+gsea_result <- gseGO(
+  geneList = gene_list,
+  OrgDb = org.Hs.eg.db,
+  ont = "MF",  # oder "BP", "CC"
+  keyType = "ENTREZID",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+
+plot_gsea_barplot(gsea_result, n = 20)
+safe_dotplot(gsea_result, n=20)
+
+# Zeitstempel erzeugen
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+
+
+
+ 
+saveRDS(gsea_result, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/hl540_cryo/data_", timestamp, ".rds"))
+
+  
+
+gsea_result <- gseGO(
+  geneList = gene_list,
+  OrgDb = org.Hs.eg.db,
+  ont = "BP",  # oder "BP", "CC"
+  keyType = "ENTREZID",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+
+plot_gsea_barplot(gsea_result, n = 20)
+safe_dotplot(gsea_result, n=20)
+
+# Zeitstempel erzeugen
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+
+
+
+ 
+   
+  
+saveRDS(gsea_result, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/hl540_cryo/data_", timestamp, ".rds"))
+
+
+gsea_result <- gseGO(
+  geneList = gene_list,
+  OrgDb = org.Hs.eg.db,
+  ont = "CC",  # oder "BP", "CC"
+  keyType = "ENTREZID",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+
+plot_gsea_barplot(gsea_result, n = 20)
+safe_dotplot(gsea_result, n=20)
+# Zeitstempel erzeugen
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+
+
+
+ 
+   
+  
+saveRDS(gsea_result, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/hl540_cryo/data_", timestamp, ".rds"))
+```
+
+### kegg
+
+```{r}
+# SYMBOL → ENTREZ
+DEqMS.results$ENTREZID <- mapIds(
+  org.Hs.eg.db,
+  keys = DEqMS.results$Gene.name,
+  column = "ENTREZID",
+  keytype = "SYMBOL",
+  multiVals = "first"
+)
+
+# Duplikate & NAs bereinigen
+ranks_df <- DEqMS.results %>%
+  filter(!is.na(ENTREZID), is.finite(logFC)) %>%
+  group_by(ENTREZID) %>%
+  slice_max(order_by = abs(logFC), n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  arrange(desc(logFC))
+
+# Ranking-Vektor bauen
+gene_list <- setNames(ranks_df$logFC, ranks_df$ENTREZID)
+gene_list <- gene_list[is.finite(gene_list) & gene_list != 0]
+stopifnot(!any(duplicated(names(gene_list))))  # sicherstellen, dass keine Duplikate mehr existieren
+
+# GSEA mit KEGG
+gsea_kegg <- gseKEGG(
+  geneList     = gene_list,
+  organism     = "hsa",       # hsa = human, mmu = mouse
+  minGSSize    = 5,
+  maxGSSize    = 500,
+  pvalueCutoff = 0.05,
+  verbose      = TRUE
+)
+
+# Ergebnisse prüfen & visualisieren
+head(gsea_kegg@result)
+safe_dotplot(gsea_kegg, n=20)
+safe_ridgeplot(gsea_kegg)
+
+saveRDS(gsea_kegg, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/kegg/hl540_cryo/data_", timestamp, ".rds"))
+
+```
+
+
+
+
+# C vs RE
+
+## diff proteomics
+
+```{r}
+df <- read.csv("./results_maxquant/hl540_cryo_galaxy.txt", sep = "\t")
+df.prot <- df
+# remove decoy matches and matches to contaminant
+df.prot = df.prot[!df.prot$Reverse=="+",]
+df.prot = df.prot[!df.prot$Potential.contaminant=="+",]
+df.prot = df.prot[!df.prot$Only.identified.by.site=="+",]
+
+#extract gene name via function
+df.prot$Gene.names <- extract_gene_names(df.prot$Fasta.headers)
+
+# Extract columns of LFQ intensites
+df.LFQ <- df.prot[,c(260:262,266:271,296:301,302:307)]
+df.LFQ[df.LFQ==0] <- NA; print(colnames(df.LFQ))
+
+rownames(df.LFQ) = df.prot$Majority.protein.IDs
+
+df.LFQ <- t(df.LFQ)
+
+keep_cols <- colSums(!is.na(df.LFQ)) > 0
+removed_col_indices <- which(!keep_cols)
+
+
+# Entferne Spalten, in denen alle Werte NA sind
+df.LFQ.clean <- df.LFQ[, colSums(!is.na(df.LFQ)) > 0]
+
+df.LFQ.clean <- log2(df.LFQ.clean)
+
+
+result <- llsImpute(as.matrix(df.LFQ.clean), k = 10, correlation = "pearson", allVariables = TRUE)
+
+df.LFQ <- as.data.frame(completeObs(result))
+df.LFQ <- as.data.frame(t(df.LFQ))
+
+```
+
+```{r}
+df.LFQ$valid_A = apply(df.LFQ[, 1:9], 1, function(x) sum(!is.na(x)))
+df.LFQ$valid_B = apply(df.LFQ[, 10:21], 1, function(x) sum(!is.na(x)))
+df.LFQ.filter = df.LFQ[df.LFQ$valid_A >= 1 | df.LFQ$valid_B >= 2, 1:21]
+
+print(colnames(df.prot[,c(59:61, 65:70, 95:100,101:106)]))
+# we use minimum peptide count among six samples
+# count unique+razor peptides used for quantification
+pep.count.table = data.frame(count = rowMins(as.matrix(df.prot[-removed_col_indices,c(59:61, 65:70, 95:100,101:106)])),
+                             row.names = df.prot$Majority.protein.IDs[-removed_col_indices])
+# Minimum peptide count of some proteins can be 0
+# add pseudocount 1 to all proteins
+pep.count.table$count = pep.count.table$count+1
+
+
+protein.matrix = as.matrix(df.LFQ.filter)
+
+class <- factor(c(rep("C", 9),  rep("RE", 12)))          # C1-3, C4-9, RE1-6, RE7-12
+replicate <- factor(c(rep("rep1", 3), rep("rep2", 6),   # C1-3 = rep1, C4-9 = rep2
+                      rep("rep1", 6), rep("rep2", 6)))  # RE1-6 = rep1, RE7-12 = rep2
+
+# 2) Design ohne Interzept + Replikat als Kovariate (Batch)
+design <- model.matrix(~ 0 + class + replicate)
+colnames(design)[1:2] <- c("classC", "classRE")          # optional, für saubere Namen
+
+fit_result <- run_deqms_pipeline(protein.matrix, design, pep.count.table,
+                                 contrast_string = "classC-classRE")
+
+DEqMS.results = outputResult(fit_result,coef_col = 1)
+# Add Gene names to the data frame
+rownames(df.prot) = df.prot$Majority.protein.IDs
+DEqMS.results$Gene.name = df.prot[DEqMS.results$gene,]$Gene.names
+
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+write.csv(DEqMS.results, file = paste0( "/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/raw_log2FCdata/hl540_cryo/data_", timestamp, ".csv"))
+
+
+# Verarbeiten
+processed_df <- DEqMS.results %>%
+  filter(!is.na(logFC)) %>%                                 # Schritt 1: NAs filtern
+  mutate(across(where(is.numeric), ~ round(.x, 3)))          # Schritt 2: Runden
+
+# Ausgabe
+datatable(processed_df, rownames = FALSE)
+
+# proteins of interest
+processed_df_interest <- processed_df %>%
+  filter(Gene.name %in% proteins_of_interest)
+
+datatable(processed_df_interest, rownames = FALSE,caption="proteins of interest")
+
+
+logFC <- 1.0
+
+sig_proteins <- DEqMS.results %>%
+  filter(sca.P.Value <= 0.05) %>%           # Schwelle: signifikant
+  filter(!is.na(logFC)) %>%                 # Sicherheitshalber NAs entfernen
+  mutate(across(where(is.numeric), ~ round(.x, 3)))  # Optional: runden
+
+sig_strong <- sig_proteins %>%
+  filter(abs(logFC) >= 1.0)
+
+DT::datatable(sig_strong, rownames = FALSE,
+              caption = "Stark regulierte Proteine (|logFC| ≥ 1.0 & sca.P.Value ≤ 0.05)")
+
+
+vp_lfc_limit <- 5
+plot_volcano(DEqMS.results, "C vs RE", vp_lfc_limit)
+
+# Filtere signifikante Proteine
+sig <- DEqMS.results %>%
+  filter(sca.P.Value <= 0.05)
+
+# Anzahl stark hochreguliert
+n_up <- sum(sig$logFC >= 1.0, na.rm = TRUE)
+
+# Anzahl stark runterreguliert
+n_down <- sum(sig$logFC <= -1.0, na.rm = TRUE)
+
+# Gesamtanzahl stark reguliert (in beide Richtungen)
+n_total <- sum(abs(sig$logFC) >= 1.0, na.rm = TRUE)
+
+# Ausgabe
+cat("Stark hochreguliert (logFC ≥ 1.0):", n_up, "\n")
+cat("Stark runterreguliert (logFC ≤ -1.0):", n_down, "\n")
+cat("Gesamtzahl |logFC| ≥ 1.0:", n_total, "\n")
+```
+
+### gsea
+
+```{r}
+DEqMS.results$Gene.name <- df.prot[DEqMS.results$gene,]$Gene.names 
+
+gene_list <- prepare_gene_list_for_gsea(DEqMS.results)
+gsea_result <- gseGO(
+  geneList = gene_list,
+  OrgDb = org.Hs.eg.db,
+  ont = "MF",  # oder "BP", "CC"
+  keyType = "ENTREZID",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+
+plot_gsea_barplot(gsea_result, n = 20)
+safe_dotplot(gsea_result, n=20)
+
+# Zeitstempel erzeugen
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+
+
+
+ 
+   
+  
+saveRDS(gsea_result, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/hl540_cryo/data_", timestamp, ".rds"))
+
+gsea_result <- gseGO(
+  geneList = gene_list,
+  OrgDb = org.Hs.eg.db,
+  ont = "BP",  # oder "BP", "CC"
+  keyType = "ENTREZID",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+
+plot_gsea_barplot(gsea_result, n = 20)
+safe_dotplot(gsea_result, n=20)
+
+# Zeitstempel erzeugen
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+
+
+
+ 
+   
+  
+saveRDS(gsea_result, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/hl540_cryo/data_", timestamp, ".rds"))
+
+
+
+gsea_result <- gseGO(
+  geneList = gene_list,
+  OrgDb = org.Hs.eg.db,
+  ont = "CC",  # oder "BP", "CC"
+  keyType = "ENTREZID",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+
+plot_gsea_barplot(gsea_result, n = 20)
+safe_dotplot(gsea_result, n=20)
+# Zeitstempel erzeugen
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+
+
+
+ 
+   
+  
+saveRDS(gsea_result, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/hl540_cryo/data_", timestamp, ".rds"))
+```
+
+### kegg
+
+```{r}
+# SYMBOL → ENTREZ
+DEqMS.results$ENTREZID <- mapIds(
+  org.Hs.eg.db,
+  keys = DEqMS.results$Gene.name,
+  column = "ENTREZID",
+  keytype = "SYMBOL",
+  multiVals = "first"
+)
+
+# Duplikate & NAs bereinigen
+ranks_df <- DEqMS.results %>%
+  filter(!is.na(ENTREZID), is.finite(logFC)) %>%
+  group_by(ENTREZID) %>%
+  slice_max(order_by = abs(logFC), n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  arrange(desc(logFC))
+
+# Ranking-Vektor bauen
+gene_list <- setNames(ranks_df$logFC, ranks_df$ENTREZID)
+gene_list <- gene_list[is.finite(gene_list) & gene_list != 0]
+stopifnot(!any(duplicated(names(gene_list))))  # sicherstellen, dass keine Duplikate mehr existieren
+
+# GSEA mit KEGG
+gsea_kegg <- gseKEGG(
+  geneList     = gene_list,
+  organism     = "hsa",       # hsa = human, mmu = mouse
+  minGSSize    = 5,
+  maxGSSize    = 500,
+  pvalueCutoff = 0.05,
+  verbose      = TRUE
+)
+
+# Ergebnisse prüfen & visualisieren
+head(gsea_kegg@result)
+safe_dotplot(gsea_kegg, n=20)
+safe_ridgeplot(gsea_kegg)
+
+saveRDS(gsea_kegg, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/kegg/hl540_cryo/data_", timestamp, ".rds"))
+
+```
+
+
+
+
+# C vs R
+
+## diff proteomics
+
+```{r}
+df <- read.csv("./results_maxquant/hl540_cryo_galaxy.txt", sep = "\t")
+df.prot <- df
+# remove decoy matches and matches to contaminant
+df.prot = df.prot[!df.prot$Reverse=="+",]
+df.prot = df.prot[!df.prot$Potential.contaminant=="+",]
+df.prot = df.prot[!df.prot$Only.identified.by.site=="+",]
+
+#extract gene name via function
+df.prot$Gene.names <- extract_gene_names(df.prot$Fasta.headers)
+
+# Extract columns of LFQ intensites
+df.LFQ <- df.prot[,c(260:262,266:271,284:289,290:295)]
+df.LFQ[df.LFQ==0] <- NA; print(colnames(df.LFQ))
+
+rownames(df.LFQ) = df.prot$Majority.protein.IDs
+
+df.LFQ <- t(df.LFQ)
+
+keep_cols <- colSums(!is.na(df.LFQ)) > 0
+removed_col_indices <- which(!keep_cols)
+
+
+# Entferne Spalten, in denen alle Werte NA sind
+df.LFQ.clean <- df.LFQ[, colSums(!is.na(df.LFQ)) > 0]
+
+df.LFQ.clean <- log2(df.LFQ.clean)
+
+
+result <- llsImpute(as.matrix(df.LFQ.clean), k = 10, correlation = "pearson", allVariables = TRUE)
+
+df.LFQ <- as.data.frame(completeObs(result))
+df.LFQ <- as.data.frame(t(df.LFQ))
+
+```
+
+```{r}
+df.LFQ$valid_A = apply(df.LFQ[, 1:9], 1, function(x) sum(!is.na(x)))
+df.LFQ$valid_B = apply(df.LFQ[, 10:21], 1, function(x) sum(!is.na(x)))
+df.LFQ.filter = df.LFQ[df.LFQ$valid_A >= 1 | df.LFQ$valid_B >= 2, 1:21]
+
+print(colnames(df.prot[,c(59:61, 65:70, 83:88,89:94)]))
+# we use minimum peptide count among six samples
+# count unique+razor peptides used for quantification
+pep.count.table = data.frame(count = rowMins(as.matrix(df.prot[-removed_col_indices,c(59:61, 65:70, 83:88,89:94)])),
+                             row.names = df.prot$Majority.protein.IDs[-removed_col_indices])
+# Minimum peptide count of some proteins can be 0
+# add pseudocount 1 to all proteins
+pep.count.table$count = pep.count.table$count+1
+
+
+protein.matrix = as.matrix(df.LFQ.filter)
+
+class <- factor(c(rep("C", 9),  rep("R", 12)))          # C1-3, C4-9, R1-6, R7-12
+replicate <- factor(c(rep("rep1", 3), rep("rep2", 6),   # C1-3 = rep1, C4-9 = rep2
+                      rep("rep1", 6), rep("rep2", 6)))  # R1-6 = rep1, R7-12 = rep2
+
+# 2) Design ohne Interzept + Replikat als Kovariate (Batch)
+design <- model.matrix(~ 0 + class + replicate)
+colnames(design)[1:2] <- c("classC", "classR")          # optional, für saubere Namen
+
+fit_result <- run_deqms_pipeline(protein.matrix, design, pep.count.table,
+                                 contrast_string = "classC-classR")
+
+DEqMS.results = outputResult(fit_result,coef_col = 1)
+# Add Gene names to the data frame
+rownames(df.prot) = df.prot$Majority.protein.IDs
+DEqMS.results$Gene.name = df.prot[DEqMS.results$gene,]$Gene.names
+
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+write.csv(DEqMS.results, file = paste0( "/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/raw_log2FCdata/hl540_cryo/data_", timestamp, ".csv"))
+
+
+# Verarbeiten
+processed_df <- DEqMS.results %>%
+  filter(!is.na(logFC)) %>%                                 # Schritt 1: NAs filtern
+  mutate(across(where(is.numeric), ~ round(.x, 3)))          # Schritt 2: Runden
+
+# Ausgabe
+datatable(processed_df, rownames = FALSE)
+
+# proteins of interest
+processed_df_interest <- processed_df %>%
+  filter(Gene.name %in% proteins_of_interest)
+
+datatable(processed_df_interest, rownames = FALSE,caption="proteins of interest")
+
+
+logFC <- 1.0
+
+sig_proteins <- DEqMS.results %>%
+  filter(sca.P.Value <= 0.05) %>%           # Schwelle: signifikant
+  filter(!is.na(logFC)) %>%                 # Sicherheitshalber NAs entfernen
+  mutate(across(where(is.numeric), ~ round(.x, 3)))  # Optional: runden
+
+sig_strong <- sig_proteins %>%
+  filter(abs(logFC) >= 1.0)
+
+DT::datatable(sig_strong, rownames = FALSE,
+              caption = "Stark regulierte Proteine (|logFC| ≥ 1.0 & sca.P.Value ≤ 0.05)")
+
+
+vp_lfc_limit <- 5
+plot_volcano(DEqMS.results, "C vs R", vp_lfc_limit)
+
+# Filtere signifikante Proteine
+sig <- DEqMS.results %>%
+  filter(sca.P.Value <= 0.05)
+
+# Anzahl stark hochreguliert
+n_up <- sum(sig$logFC >= 1.0, na.rm = TRUE)
+
+# Anzahl stark runterreguliert
+n_down <- sum(sig$logFC <= -1.0, na.rm = TRUE)
+
+# Gesamtanzahl stark reguliert (in beide Richtungen)
+n_total <- sum(abs(sig$logFC) >= 1.0, na.rm = TRUE)
+
+# Ausgabe
+cat("Stark hochreguliert (logFC ≥ 1.0):", n_up, "\n")
+cat("Stark runterreguliert (logFC ≤ -1.0):", n_down, "\n")
+cat("Gesamtzahl |logFC| ≥ 1.0:", n_total, "\n")
+```
+
+## gsea
+
+```{r}
+DEqMS.results$Gene.name <- df.prot[DEqMS.results$gene,]$Gene.names 
+
+gene_list <- prepare_gene_list_for_gsea(DEqMS.results)
+gsea_result <- gseGO(
+  geneList = gene_list,
+  OrgDb = org.Hs.eg.db,
+  ont = "MF",  # oder "BP", "CC"
+  keyType = "ENTREZID",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+
+plot_gsea_barplot(gsea_result, n = 20)
+safe_dotplot(gsea_result, n=20)
+
+# Zeitstempel erzeugen
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+
+
+
+ 
+   
+  
+saveRDS(gsea_result, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/hl540_cryo/data_", timestamp, ".rds"))
+
+
+
+gsea_result <- gseGO(
+  geneList = gene_list,
+  OrgDb = org.Hs.eg.db,
+  ont = "BP",  # oder "BP", "CC"
+  keyType = "ENTREZID",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+
+plot_gsea_barplot(gsea_result, n = 20)
+safe_dotplot(gsea_result, n=20)
+
+# Zeitstempel erzeugen
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+
+
+
+ 
+   
+  
+saveRDS(gsea_result, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/hl540_cryo/data_", timestamp, ".rds"))
+
+
+gsea_result <- gseGO(
+  geneList = gene_list,
+  OrgDb = org.Hs.eg.db,
+  ont = "CC",  # oder "BP", "CC"
+  keyType = "ENTREZID",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+
+plot_gsea_barplot(gsea_result, n = 20)
+safe_dotplot(gsea_result, n=20)
+
+# Zeitstempel erzeugen
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+
+
+
+ 
+   
+  
+saveRDS(gsea_result, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/hl540_cryo/data_", timestamp, ".rds"))
+```
+
+
+### kegg
+
+```{r}
+# SYMBOL → ENTREZ
+DEqMS.results$ENTREZID <- mapIds(
+  org.Hs.eg.db,
+  keys = DEqMS.results$Gene.name,
+  column = "ENTREZID",
+  keytype = "SYMBOL",
+  multiVals = "first"
+)
+
+# Duplikate & NAs bereinigen
+ranks_df <- DEqMS.results %>%
+  filter(!is.na(ENTREZID), is.finite(logFC)) %>%
+  group_by(ENTREZID) %>%
+  slice_max(order_by = abs(logFC), n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  arrange(desc(logFC))
+
+# Ranking-Vektor bauen
+gene_list <- setNames(ranks_df$logFC, ranks_df$ENTREZID)
+gene_list <- gene_list[is.finite(gene_list) & gene_list != 0]
+stopifnot(!any(duplicated(names(gene_list))))  # sicherstellen, dass keine Duplikate mehr existieren
+
+# GSEA mit KEGG
+gsea_kegg <- gseKEGG(
+  geneList     = gene_list,
+  organism     = "hsa",       # hsa = human, mmu = mouse
+  minGSSize    = 5,
+  maxGSSize    = 500,
+  pvalueCutoff = 0.05,
+  verbose      = TRUE
+)
+
+# Ergebnisse prüfen & visualisieren
+head(gsea_kegg@result)
+safe_dotplot(gsea_kegg, n=20)
+safe_ridgeplot(gsea_kegg)
+
+saveRDS(gsea_kegg, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/kegg/hl540_cryo/data_", timestamp, ".rds"))
+
+```
+
+
+# E vs R
+
+## diff proteomics
+
+```{r}
+df <- read.csv("./results_maxquant/hl540_cryo_galaxy.txt", sep = "\t")
+df.prot <- df
+# remove decoy matches and matches to contaminant
+df.prot = df.prot[!df.prot$Reverse=="+",]
+df.prot = df.prot[!df.prot$Potential.contaminant=="+",]
+df.prot = df.prot[!df.prot$Only.identified.by.site=="+",]
+
+#extract gene name via function
+df.prot$Gene.names <- extract_gene_names(df.prot$Fasta.headers)
+
+# Extract columns of LFQ intensites
+df.LFQ <- df.prot[,c(272:277,278:283,284:289,290:295)]
+df.LFQ[df.LFQ==0] <- NA; print(colnames(df.LFQ))
+
+rownames(df.LFQ) = df.prot$Majority.protein.IDs
+
+df.LFQ <- t(df.LFQ)
+
+keep_cols <- colSums(!is.na(df.LFQ)) > 0
+removed_col_indices <- which(!keep_cols)
+
+
+# Entferne Spalten, in denen alle Werte NA sind
+df.LFQ.clean <- df.LFQ[, colSums(!is.na(df.LFQ)) > 0]
+
+df.LFQ.clean <- log2(df.LFQ.clean)
+
+
+result <- llsImpute(as.matrix(df.LFQ.clean), k = 10, correlation = "pearson", allVariables = TRUE)
+
+df.LFQ <- as.data.frame(completeObs(result))
+df.LFQ <- as.data.frame(t(df.LFQ))
+
+```
+
+```{r}
+df.LFQ$valid_A = apply(df.LFQ[, 1:12], 1, function(x) sum(!is.na(x)))
+df.LFQ$valid_B = apply(df.LFQ[, 13:24], 1, function(x) sum(!is.na(x)))
+df.LFQ.filter = df.LFQ[df.LFQ$valid_A >= 2 | df.LFQ$valid_B >= 2, 1:24]
+
+print(colnames(df.prot[,c(71:76, 77:82, 83:88,89:94)]))
+# we use minimum peptide count among six samples
+# count unique+razor peptides used for quantification
+pep.count.table = data.frame(count = rowMins(as.matrix(df.prot[-removed_col_indices,c(71:76, 77:82, 83:88,89:94)])),
+                             row.names = df.prot$Majority.protein.IDs[-removed_col_indices])
+# Minimum peptide count of some proteins can be 0
+# add pseudocount 1 to all proteins
+pep.count.table$count = pep.count.table$count+1
+
+
+protein.matrix = as.matrix(df.LFQ.filter)
+
+class <- factor(c(rep("E", 12),  rep("R", 12)))          # E1-6, C7-12, R1-6, R7-12
+replicate <- factor(c(rep("rep1", 6), rep("rep2", 6),   # E1-6 = rep1, E7-12 = rep2
+                      rep("rep1", 6), rep("rep2", 6)))  # R1-6 = rep1, R7-12 = rep2
+
+# 2) Design ohne Interzept + Replikat als Kovariate (Batch)
+design <- model.matrix(~ 0 + class + replicate)
+colnames(design)[1:2] <- c("classE", "classR")          # optional, für saubere Namen
+
+fit_result <- run_deqms_pipeline(protein.matrix, design, pep.count.table,
+                                 contrast_string = "classE-classR")
+
+DEqMS.results = outputResult(fit_result,coef_col = 1)
+# Add Gene names to the data frame
+rownames(df.prot) = df.prot$Majority.protein.IDs
+DEqMS.results$Gene.name = df.prot[DEqMS.results$gene,]$Gene.names
+
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+write.csv(DEqMS.results, file = paste0( "/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/raw_log2FCdata/hl540_cryo/data_", timestamp, ".csv"))
+
+# Verarbeiten
+processed_df <- DEqMS.results %>%
+  filter(!is.na(logFC)) %>%                                 # Schritt 1: NAs filtern
+  mutate(across(where(is.numeric), ~ round(.x, 3)))          # Schritt 2: Runden
+
+# Ausgabe
+datatable(processed_df, rownames = FALSE)
+
+# proteins of interest
+processed_df_interest <- processed_df %>%
+  filter(Gene.name %in% proteins_of_interest)
+
+datatable(processed_df_interest, rownames = FALSE,caption="proteins of interest")
+
+
+logFC <- 1.0
+
+sig_proteins <- DEqMS.results %>%
+  filter(sca.P.Value <= 0.05) %>%           # Schwelle: signifikant
+  filter(!is.na(logFC)) %>%                 # Sicherheitshalber NAs entfernen
+  mutate(across(where(is.numeric), ~ round(.x, 3)))  # Optional: runden
+
+sig_strong <- sig_proteins %>%
+  filter(abs(logFC) >= 1.0)
+
+DT::datatable(sig_strong, rownames = FALSE,
+              caption = "Stark regulierte Proteine (|logFC| ≥ 1.0 & sca.P.Value ≤ 0.05)")
+
+vp_lfc_limit <- 5
+plot_volcano(DEqMS.results, "E vs R", vp_lfc_limit)
+
+# Filtere signifikante Proteine
+sig <- DEqMS.results %>%
+  filter(sca.P.Value <= 0.05)
+
+# Anzahl stark hochreguliert
+n_up <- sum(sig$logFC >= 1.0, na.rm = TRUE)
+
+# Anzahl stark runterreguliert
+n_down <- sum(sig$logFC <= -1.0, na.rm = TRUE)
+
+# Gesamtanzahl stark reguliert (in beide Richtungen)
+n_total <- sum(abs(sig$logFC) >= 1.0, na.rm = TRUE)
+
+# Ausgabe
+cat("Stark hochreguliert (logFC ≥ 1.0):", n_up, "\n")
+cat("Stark runterreguliert (logFC ≤ -1.0):", n_down, "\n")
+cat("Gesamtzahl |logFC| ≥ 1.0:", n_total, "\n")
+```
+
+## gsea
+
+```{r}
+DEqMS.results$Gene.name <- df.prot[DEqMS.results$gene,]$Gene.names 
+
+gene_list <- prepare_gene_list_for_gsea(DEqMS.results)
+gsea_result <- gseGO(
+  geneList = gene_list,
+  OrgDb = org.Hs.eg.db,
+  ont = "MF",  # oder "BP", "CC"
+  keyType = "ENTREZID",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+
+plot_gsea_barplot(gsea_result, n = 20)
+safe_dotplot(gsea_result, n=20)
+
+# Zeitstempel erzeugen
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+
+
+
+ 
+   
+  
+saveRDS(gsea_result, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/hl540_cryo/data_", timestamp, ".rds"))
+
+
+gsea_result <- gseGO(
+  geneList = gene_list,
+  OrgDb = org.Hs.eg.db,
+  ont = "BP",  # oder "BP", "CC"
+  keyType = "ENTREZID",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+
+plot_gsea_barplot(gsea_result, n = 20)
+safe_dotplot(gsea_result, n=20)
+
+# Zeitstempel erzeugen
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+
+
+
+ 
+   
+  
+saveRDS(gsea_result, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/hl540_cryo/data_", timestamp, ".rds"))
+
+gsea_result <- gseGO(
+  geneList = gene_list,
+  OrgDb = org.Hs.eg.db,
+  ont = "CC",  # oder "BP", "CC"
+  keyType = "ENTREZID",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+
+plot_gsea_barplot(gsea_result, n = 20)
+safe_dotplot(gsea_result, n=20)
+
+# Zeitstempel erzeugen
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+
+
+
+ 
+   
+  
+saveRDS(gsea_result, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/hl540_cryo/data_", timestamp, ".rds"))
+
+```
+
+
+### kegg
+
+```{r}
+# SYMBOL → ENTREZ
+DEqMS.results$ENTREZID <- mapIds(
+  org.Hs.eg.db,
+  keys = DEqMS.results$Gene.name,
+  column = "ENTREZID",
+  keytype = "SYMBOL",
+  multiVals = "first"
+)
+
+# Duplikate & NAs bereinigen
+ranks_df <- DEqMS.results %>%
+  filter(!is.na(ENTREZID), is.finite(logFC)) %>%
+  group_by(ENTREZID) %>%
+  slice_max(order_by = abs(logFC), n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  arrange(desc(logFC))
+
+# Ranking-Vektor bauen
+gene_list <- setNames(ranks_df$logFC, ranks_df$ENTREZID)
+gene_list <- gene_list[is.finite(gene_list) & gene_list != 0]
+stopifnot(!any(duplicated(names(gene_list))))  # sicherstellen, dass keine Duplikate mehr existieren
+
+# GSEA mit KEGG
+gsea_kegg <- gseKEGG(
+  geneList     = gene_list,
+  organism     = "hsa",       # hsa = human, mmu = mouse
+  minGSSize    = 5,
+  maxGSSize    = 500,
+  pvalueCutoff = 0.05,
+  verbose      = TRUE
+)
+
+# Ergebnisse prüfen & visualisieren
+head(gsea_kegg@result)
+safe_dotplot(gsea_kegg, n=20)
+safe_ridgeplot(gsea_kegg)
+
+saveRDS(gsea_kegg, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/kegg/hl540_cryo/data_", timestamp, ".rds"))
+
+```
+
+
+# E vs RE
+
+## diff proteomics
+
+```{r}
+df <- read.csv("./results_maxquant/hl540_cryo_galaxy.txt", sep = "\t")
+df.prot <- df
+# remove decoy matches and matches to contaminant
+df.prot = df.prot[!df.prot$Reverse=="+",]
+df.prot = df.prot[!df.prot$Potential.contaminant=="+",]
+df.prot = df.prot[!df.prot$Only.identified.by.site=="+",]
+
+#extract gene name via function
+df.prot$Gene.names <- extract_gene_names(df.prot$Fasta.headers)
+
+# Extract columns of LFQ intensites
+df.LFQ <- df.prot[,c(272:277,278:283,296:301,302:307)]
+df.LFQ[df.LFQ==0] <- NA; print(colnames(df.LFQ))
+
+rownames(df.LFQ) = df.prot$Majority.protein.IDs
+
+df.LFQ <- t(df.LFQ)
+
+keep_cols <- colSums(!is.na(df.LFQ)) > 0
+removed_col_indices <- which(!keep_cols)
+
+
+# Entferne Spalten, in denen alle Werte NA sind
+df.LFQ.clean <- df.LFQ[, colSums(!is.na(df.LFQ)) > 0]
+
+df.LFQ.clean <- log2(df.LFQ.clean)
+
+
+result <- llsImpute(as.matrix(df.LFQ.clean), k = 10, correlation = "pearson", allVariables = TRUE)
+
+df.LFQ <- as.data.frame(completeObs(result))
+df.LFQ <- as.data.frame(t(df.LFQ))
+
+```
+
+```{r}
+df.LFQ$valid_A = apply(df.LFQ[, 1:12], 1, function(x) sum(!is.na(x)))
+df.LFQ$valid_B = apply(df.LFQ[, 13:24], 1, function(x) sum(!is.na(x)))
+df.LFQ.filter = df.LFQ[df.LFQ$valid_A >= 2 | df.LFQ$valid_B >= 2, 1:24]
+
+print(colnames(df.prot[,c(71:76, 77:82, 95:100,101:106)]))
+# we use minimum peptide count among six samples
+# count unique+razor peptides used for quantification
+pep.count.table = data.frame(count = rowMins(as.matrix(df.prot[-removed_col_indices,c(71:76, 77:82, 95:100,101:106)])),
+                             row.names = df.prot$Majority.protein.IDs[-removed_col_indices])
+# Minimum peptide count of some proteins can be 0
+# add pseudocount 1 to all proteins
+pep.count.table$count = pep.count.table$count+1
+
+
+protein.matrix = as.matrix(df.LFQ.filter)
+
+class <- factor(c(rep("E", 12),  rep("RE", 12)))          #
+replicate <- factor(c(rep("rep1", 6), rep("rep2", 6),   
+                      rep("rep1", 6), rep("rep2", 6)))  #
+
+# 2) Design ohne Interzept + Replikat als Kovariate (Batch)
+design <- model.matrix(~ 0 + class + replicate)
+colnames(design)[1:2] <- c("classE", "classRE")          # optional, für saubere Namen
+
+fit_result <- run_deqms_pipeline(protein.matrix, design, pep.count.table,
+                                 contrast_string = "classE-classRE")
+
+DEqMS.results = outputResult(fit_result,coef_col = 1)
+# Add Gene names to the data frame
+rownames(df.prot) = df.prot$Majority.protein.IDs
+DEqMS.results$Gene.name = df.prot[DEqMS.results$gene,]$Gene.names
+
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+write.csv(DEqMS.results, file = paste0( "/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/raw_log2FCdata/hl540_cryo/data_", timestamp, ".csv"))
+
+
+# Verarbeiten
+processed_df <- DEqMS.results %>%
+  filter(!is.na(logFC)) %>%                                 # Schritt 1: NAs filtern
+  mutate(across(where(is.numeric), ~ round(.x, 3)))          # Schritt 2: Runden
+
+# Ausgabe
+datatable(processed_df, rownames = FALSE)
+
+# proteins of interest
+processed_df_interest <- processed_df %>%
+  filter(Gene.name %in% proteins_of_interest)
+
+datatable(processed_df_interest, rownames = FALSE,caption="proteins of interest")
+
+
+logFC <- 1.0
+
+sig_proteins <- DEqMS.results %>%
+  filter(sca.P.Value <= 0.05) %>%           # Schwelle: signifikant
+  filter(!is.na(logFC)) %>%                 # Sicherheitshalber NAs entfernen
+  mutate(across(where(is.numeric), ~ round(.x, 3)))  # Optional: runden
+
+sig_strong <- sig_proteins %>%
+  filter(abs(logFC) >= 1.0)
+
+DT::datatable(sig_strong, rownames = FALSE,
+              caption = "Stark regulierte Proteine (|logFC| ≥ 1.0 & sca.P.Value ≤ 0.05)")
+
+vp_lfc_limit <- 5
+plot_volcano(DEqMS.results, "E vs RE", vp_lfc_limit)
+
+# Filtere signifikante Proteine
+sig <- DEqMS.results %>%
+  filter(sca.P.Value <= 0.05)
+
+# Anzahl stark hochreguliert
+n_up <- sum(sig$logFC >= 1.0, na.rm = TRUE)
+
+# Anzahl stark runterreguliert
+n_down <- sum(sig$logFC <= -1.0, na.rm = TRUE)
+
+# Gesamtanzahl stark reguliert (in beide Richtungen)
+n_total <- sum(abs(sig$logFC) >= 1.0, na.rm = TRUE)
+
+# Ausgabe
+cat("Stark hochreguliert (logFC ≥ 1.0):", n_up, "\n")
+cat("Stark runterreguliert (logFC ≤ -1.0):", n_down, "\n")
+cat("Gesamtzahl |logFC| ≥ 1.0:", n_total, "\n")
+```
+
+
+## gsea
+
+```{r}
+DEqMS.results$Gene.name <- df.prot[DEqMS.results$gene,]$Gene.names 
+
+gene_list <- prepare_gene_list_for_gsea(DEqMS.results)
+gsea_result <- gseGO(
+  geneList = gene_list,
+  OrgDb = org.Hs.eg.db,
+  ont = "MF",  # oder "BP", "CC"
+  keyType = "ENTREZID",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+
+plot_gsea_barplot(gsea_result, n = 20)
+safe_dotplot(gsea_result, n=20)
+
+# Zeitstempel erzeugen
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+
+
+
+ 
+   
+  
+saveRDS(gsea_result, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/hl540_cryo/data_", timestamp, ".rds"))
+
+
+gsea_result <- gseGO(
+  geneList = gene_list,
+  OrgDb = org.Hs.eg.db,
+  ont = "BP",  # oder "BP", "CC"
+  keyType = "ENTREZID",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+
+plot_gsea_barplot(gsea_result, n = 20)
+safe_dotplot(gsea_result, n=20)
+
+# Zeitstempel erzeugen
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+
+
+
+ 
+   
+  
+saveRDS(gsea_result, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/hl540_cryo/data_", timestamp, ".rds"))
+
+
+
+gsea_result <- gseGO(
+  geneList = gene_list,
+  OrgDb = org.Hs.eg.db,
+  ont = "CC",  # oder "BP", "CC"
+  keyType = "ENTREZID",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+
+plot_gsea_barplot(gsea_result, n = 20)
+safe_dotplot(gsea_result, n=20)
+
+# Zeitstempel erzeugen
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+
+
+
+ 
+   
+  
+saveRDS(gsea_result, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/hl540_cryo/data_", timestamp, ".rds"))
+
+```
+
+
+### kegg
+
+```{r}
+# SYMBOL → ENTREZ
+DEqMS.results$ENTREZID <- mapIds(
+  org.Hs.eg.db,
+  keys = DEqMS.results$Gene.name,
+  column = "ENTREZID",
+  keytype = "SYMBOL",
+  multiVals = "first"
+)
+
+# Duplikate & NAs bereinigen
+ranks_df <- DEqMS.results %>%
+  filter(!is.na(ENTREZID), is.finite(logFC)) %>%
+  group_by(ENTREZID) %>%
+  slice_max(order_by = abs(logFC), n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  arrange(desc(logFC))
+
+# Ranking-Vektor bauen
+gene_list <- setNames(ranks_df$logFC, ranks_df$ENTREZID)
+gene_list <- gene_list[is.finite(gene_list) & gene_list != 0]
+stopifnot(!any(duplicated(names(gene_list))))  # sicherstellen, dass keine Duplikate mehr existieren
+
+# GSEA mit KEGG
+gsea_kegg <- gseKEGG(
+  geneList     = gene_list,
+  organism     = "hsa",       # hsa = human, mmu = mouse
+  minGSSize    = 5,
+  maxGSSize    = 500,
+  pvalueCutoff = 0.05,
+  verbose      = TRUE
+)
+
+# Ergebnisse prüfen & visualisieren
+head(gsea_kegg@result)
+safe_dotplot(gsea_kegg, n=20)
+safe_ridgeplot(gsea_kegg)
+
+saveRDS(gsea_kegg, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/kegg/hl540_cryo/data_", timestamp, ".rds"))
+
+```
+
+
+
+
+
+
+
+# R vs RE
+
+## diff proteomics
+
+```{r}
+df <- read.csv("./results_maxquant/hl540_cryo_galaxy.txt", sep = "\t")
+df.prot <- df
+# remove decoy matches and matches to contaminant
+df.prot = df.prot[!df.prot$Reverse=="+",]
+df.prot = df.prot[!df.prot$Potential.contaminant=="+",]
+df.prot = df.prot[!df.prot$Only.identified.by.site=="+",]
+
+#extract gene name via function
+df.prot$Gene.names <- extract_gene_names(df.prot$Fasta.headers)
+
+# Extract columns of LFQ intensites
+df.LFQ <- df.prot[,c(284:289,290:295,296:301,302:307)]
+df.LFQ[df.LFQ==0] <- NA; print(colnames(df.LFQ))
+
+rownames(df.LFQ) = df.prot$Majority.protein.IDs
+
+df.LFQ <- t(df.LFQ)
+
+keep_cols <- colSums(!is.na(df.LFQ)) > 0
+removed_col_indices <- which(!keep_cols)
+
+
+# Entferne Spalten, in denen alle Werte NA sind
+df.LFQ.clean <- df.LFQ[, colSums(!is.na(df.LFQ)) > 0]
+
+df.LFQ.clean <- log2(df.LFQ.clean)
+
+
+result <- llsImpute(as.matrix(df.LFQ.clean), k = 10, correlation = "pearson", allVariables = TRUE)
+
+df.LFQ <- as.data.frame(completeObs(result))
+df.LFQ <- as.data.frame(t(df.LFQ))
+
+```
+
+```{r}
+df.LFQ$valid_A = apply(df.LFQ[, 1:12], 1, function(x) sum(!is.na(x)))
+df.LFQ$valid_B = apply(df.LFQ[, 13:24], 1, function(x) sum(!is.na(x)))
+df.LFQ.filter = df.LFQ[df.LFQ$valid_A >= 2 | df.LFQ$valid_B >= 2, 1:24]
+
+print(colnames(df.prot[,c(83:88,89:94, 95:100,101:106)]))
+# we use minimum peptide count among six samples
+# count unique+razor peptides used for quantification
+pep.count.table = data.frame(count = rowMins(as.matrix(df.prot[-removed_col_indices,c(83:88,89:94, 95:100,101:106)])),
+                             row.names = df.prot$Majority.protein.IDs[-removed_col_indices])
+# Minimum peptide count of some proteins can be 0
+# add pseudocount 1 to all proteins
+pep.count.table$count = pep.count.table$count+1
+
+
+protein.matrix = as.matrix(df.LFQ.filter)
+
+class <- factor(c(rep("E", 12),  rep("RE", 12)))          #
+replicate <- factor(c(rep("rep1", 6), rep("rep2", 6),   
+                      rep("rep1", 6), rep("rep2", 6)))  #
+
+# 2) Design ohne Interzept + Replikat als Kovariate (Batch)
+design <- model.matrix(~ 0 + class + replicate)
+colnames(design)[1:2] <- c("classE", "classRE")          # optional, für saubere Namen
+
+fit_result <- run_deqms_pipeline(protein.matrix, design, pep.count.table,
+                                 contrast_string = "classE-classRE")
+
+DEqMS.results = outputResult(fit_result,coef_col = 1)
+# Add Gene names to the data frame
+rownames(df.prot) = df.prot$Majority.protein.IDs
+DEqMS.results$Gene.name = df.prot[DEqMS.results$gene,]$Gene.names
+
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+write.csv(DEqMS.results, file = paste0( "/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/raw_log2FCdata/hl540_cryo/data_", timestamp, ".csv"))
+
+
+# Verarbeiten
+processed_df <- DEqMS.results %>%
+  filter(!is.na(logFC)) %>%                                 # Schritt 1: NAs filtern
+  mutate(across(where(is.numeric), ~ round(.x, 3)))          # Schritt 2: Runden
+
+# Ausgabe
+datatable(processed_df, rownames = FALSE)
+
+# proteins of interest
+processed_df_interest <- processed_df %>%
+  filter(Gene.name %in% proteins_of_interest)
+
+datatable(processed_df_interest, rownames = FALSE,caption="proteins of interest")
+
+
+logFC <- 1.0
+
+sig_proteins <- DEqMS.results %>%
+  filter(sca.P.Value <= 0.05) %>%           # Schwelle: signifikant
+  filter(!is.na(logFC)) %>%                 # Sicherheitshalber NAs entfernen
+  mutate(across(where(is.numeric), ~ round(.x, 3)))  # Optional: runden
+
+sig_strong <- sig_proteins %>%
+  filter(abs(logFC) >= 1.0)
+
+DT::datatable(sig_strong, rownames = FALSE,
+              caption = "Stark regulierte Proteine (|logFC| ≥ 1.0 & sca.P.Value ≤ 0.05)")
+
+vp_lfc_limit <- 5
+plot_volcano(DEqMS.results, "E vs RE", vp_lfc_limit)
+
+# Filtere signifikante Proteine
+sig <- DEqMS.results %>%
+  filter(sca.P.Value <= 0.05)
+
+# Anzahl stark hochreguliert
+n_up <- sum(sig$logFC >= 1.0, na.rm = TRUE)
+
+# Anzahl stark runterreguliert
+n_down <- sum(sig$logFC <= -1.0, na.rm = TRUE)
+
+# Gesamtanzahl stark reguliert (in beide Richtungen)
+n_total <- sum(abs(sig$logFC) >= 1.0, na.rm = TRUE)
+
+# Ausgabe
+cat("Stark hochreguliert (logFC ≥ 1.0):", n_up, "\n")
+cat("Stark runterreguliert (logFC ≤ -1.0):", n_down, "\n")
+cat("Gesamtzahl |logFC| ≥ 1.0:", n_total, "\n")
+```
+
+
+## gsea
+
+```{r}
+DEqMS.results$Gene.name <- df.prot[DEqMS.results$gene,]$Gene.names 
+
+gene_list <- prepare_gene_list_for_gsea(DEqMS.results)
+gsea_result <- gseGO(
+  geneList = gene_list,
+  OrgDb = org.Hs.eg.db,
+  ont = "MF",  # oder "BP", "CC"
+  keyType = "ENTREZID",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+
+plot_gsea_barplot(gsea_result, n = 20)
+safe_dotplot(gsea_result, n=20)
+
+# Zeitstempel erzeugen
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+
+
+
+ 
+   
+  
+saveRDS(gsea_result, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/hl540_cryo/data_", timestamp, ".rds"))
+
+
+gsea_result <- gseGO(
+  geneList = gene_list,
+  OrgDb = org.Hs.eg.db,
+  ont = "BP",  # oder "BP", "CC"
+  keyType = "ENTREZID",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+
+plot_gsea_barplot(gsea_result, n = 20)
+safe_dotplot(gsea_result, n=20)
+
+# Zeitstempel erzeugen
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+
+
+
+ 
+   
+  
+saveRDS(gsea_result, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/hl540_cryo/data_", timestamp, ".rds"))
+
+
+
+gsea_result <- gseGO(
+  geneList = gene_list,
+  OrgDb = org.Hs.eg.db,
+  ont = "CC",  # oder "BP", "CC"
+  keyType = "ENTREZID",
+  minGSSize = 5,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = TRUE
+)
+
+plot_gsea_barplot(gsea_result, n = 20)
+safe_dotplot(gsea_result, n=20)
+
+# Zeitstempel erzeugen
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+
+
+
+ 
+   
+  
+saveRDS(gsea_result, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/hl540_cryo/data_", timestamp, ".rds"))
+
+```
+
+
+### kegg
+
+```{r}
+# SYMBOL → ENTREZ
+DEqMS.results$ENTREZID <- mapIds(
+  org.Hs.eg.db,
+  keys = DEqMS.results$Gene.name,
+  column = "ENTREZID",
+  keytype = "SYMBOL",
+  multiVals = "first"
+)
+
+# Duplikate & NAs bereinigen
+ranks_df <- DEqMS.results %>%
+  filter(!is.na(ENTREZID), is.finite(logFC)) %>%
+  group_by(ENTREZID) %>%
+  slice_max(order_by = abs(logFC), n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  arrange(desc(logFC))
+
+# Ranking-Vektor bauen
+gene_list <- setNames(ranks_df$logFC, ranks_df$ENTREZID)
+gene_list <- gene_list[is.finite(gene_list) & gene_list != 0]
+stopifnot(!any(duplicated(names(gene_list))))  # sicherstellen, dass keine Duplikate mehr existieren
+
+# GSEA mit KEGG
+gsea_kegg <- gseKEGG(
+  geneList     = gene_list,
+  organism     = "hsa",       # hsa = human, mmu = mouse
+  minGSSize    = 5,
+  maxGSSize    = 500,
+  pvalueCutoff = 0.05,
+  verbose      = TRUE
+)
+
+# Ergebnisse prüfen & visualisieren
+head(gsea_kegg@result)
+safe_dotplot(gsea_kegg, n=20)
+safe_ridgeplot(gsea_kegg)
+
+saveRDS(gsea_kegg, file = paste0("/proj/proteomics/7_combinedHL/evaluation_paper/abc_2025/evualuation_diffproteomics/kegg/hl540_cryo/data_", timestamp, ".rds"))
+
+```
+
+
+
+
+
