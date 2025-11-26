@@ -140,7 +140,7 @@ ggplot(df_counts, aes(x = Condition, y = Perc, fill = Category)) +
   geom_col(width = 0.7, color = "white", linewidth = 0.3) +
   geom_text(aes(label = label, size = Perc),
             position = position_stack(vjust = 0.5),
-            color = "white", lineheight = 0.9, show.legend = FALSE) +
+            color = "black", lineheight = 0.9, show.legend = FALSE) +
   scale_size_continuous(range = c(5, 9)) +
   scale_fill_manual(values = c(  
     "Rep1 only" = "#619CFF",
@@ -239,7 +239,7 @@ ggplot(df_counts, aes(x = Condition, y = Perc, fill = Category)) +
   geom_col(width = 0.7, color = "white", linewidth = 0.3) +
   geom_text(aes(label = label, size = Perc),
             position = position_stack(vjust = 0.5),
-            color = "white", lineheight = 0.9, show.legend = FALSE) +
+            color = "black", lineheight = 0.9, show.legend = FALSE) +
   scale_size_continuous(range = c(5,9)) +
   scale_fill_manual(values = c(
     "Rep1 only" = "#619CFF",
@@ -368,7 +368,7 @@ ggplot(df_counts, aes(x = Condition, y = Perc, fill = Category)) +
   geom_text(
     aes(label = ifelse(Perc > 0.055, label, ""), size = Perc),
     position = position_stack(vjust = 0.5),
-    color = "white",
+    color = "black",
     lineheight = 0.9,
     show.legend = FALSE
   ) +
