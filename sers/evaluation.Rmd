@@ -64,9 +64,9 @@ combined_plot
 
 # long format
 df_long <- df %>%
-  select(sample, comparison, logl1, gdbt) %>%
+  select(sample, comparison, logL1, GDBT) %>%
   pivot_longer(
-    cols = c(logl1, gdbt),
+    cols = c(logL1, GDBT),
     names_to = "model",
     values_to = "AUC"
   )
@@ -74,10 +74,10 @@ df_long <- df %>%
 df_long$sample <- factor(df_long$sample, levels = c("L-540", "L-428"))
 
 # colors cell lines
-colors <- c("L-540" = "#F8766D", "L-428" = "#00BFC4")
+colors <- c("L-540" = "#00BFC4", "L-428" = "#F8766D")
 
 # patterns
-patterns <- c("logl1" = "none", "gdbt" = "stripe")
+patterns <- c("logL1" = "none", "GDBT" = "stripe")
 
 # Plot
 plot_auc <- ggplot(df_long, aes(x = comparison, y = AUC, 
@@ -132,7 +132,7 @@ read_ct_results <- function(folder) {
   # try to read data
   if (file.exists(logreg_path)) {
     df_logreg <- read_csv(logreg_path, show_col_types = FALSE)
-    df_logreg$model <- "logl1"
+    df_logreg$model <- "logL1"
     results$logreg <- df_logreg
   }
   if (file.exists(gbdt_path)) {
@@ -201,7 +201,7 @@ df_med <- df_med %>%
 colors <- c("L-428" = "#00BFC4", "L-540" = "#F8766D")
 
 # patterns for models
-patterns <- c("logl1" = "none", "gdbt" = "stripe")
+patterns <- c("logL1" = "none", "gdbt" = "stripe")
 
 # barplot
 plot_acc <- ggplot(
@@ -225,7 +225,7 @@ plot_acc <- ggplot(
     show.legend = c(fill = TRUE, pattern = TRUE, pattern_fill = FALSE, pattern_colour = FALSE)
   ) +
   scale_fill_manual(values = colors, breaks = c("hl540","hl428")) +
-  scale_pattern_manual(values = patterns, breaks = c("logl1","gdbt")) +
+  scale_pattern_manual(values = patterns, breaks = c("logL1","gdbt")) +
   labs(
     x = "Comparison",
     y = "Median Train Accuracy",

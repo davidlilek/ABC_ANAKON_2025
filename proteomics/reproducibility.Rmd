@@ -52,7 +52,7 @@ ggplot(df, aes(x = Group, y = RSD, fill = Replicate)) +
   geom_col(position = "stack", width = 0.7) +
   geom_text(aes(label = round(RSD, 1)),
             position = position_stack(vjust = 0.5),
-            size = 3.5, color = "white") +
+            size = 3.5, color = "black") +
   facet_wrap(~ CellLine, scales = "fixed") +
   scale_y_continuous(limits = c(0, 25)) +
   labs(
@@ -397,3 +397,363 @@ scale_fill_manual(values = c(
 
 
 ```
+
+
+
+## draft
+
+```{r fig.width=7, fig.height=10}
+# ---------- L-540 cryo overlap (Rep1 / Rep2) ----------
+
+# read in data
+df <- read.csv("~/proteomics/7_combinedHL/evaluation_paper/abc_2025/results_maxquant/hl540_cryo_galaxy.txt", sep = "\t")
+
+df.prot <- df
+# remove decoy matches and matches to contaminant
+df.prot <- df.prot[!df.prot$Reverse == "+", ]
+df.prot <- df.prot[!df.prot$Potential.contaminant == "+", ]
+df.prot <- df.prot[!df.prot$Only.identified.by.site == "+", ]
+
+# ---------- count 2 replicates ----------
+count_2reps <- function(mat, idx1 = 1:6, idx2 = 7:12) {
+  Rep1 <- rowMeans(mat[, idx1, drop = FALSE], na.rm = TRUE)
+  Rep2 <- rowMeans(mat[, idx2, drop = FALSE], na.rm = TRUE)
+  Rep1[Rep1 == 0] <- NA; Rep2[Rep2 == 0] <- NA
+
+  R1 <- which(!is.na(Rep1))
+  R2 <- which(!is.na(Rep2))
+  R12 <- intersect(R1, R2)
+
+  c(
+    `Rep1 only` = length(setdiff(R1, R2)),
+    `Rep1∩Rep2` = length(R12),
+    `Rep2 only` = length(setdiff(R2, R1))
+  )
+}
+
+## ---------- Counts ----------
+# Control (3 + 6)
+data_venn <- df.prot[, c(260:262, 266:271)]
+ctrl_cnt  <- count_2reps(data_venn, idx1 = 1:3, idx2 = 4:9)
+
+# Etoposide (6 + 6)
+data_venn <- df.prot[, c(272:277, 278:283)]
+etop_cnt  <- count_2reps(data_venn)
+
+# Resveratrol (6 + 6)
+data_venn <- df.prot[, c(284:289, 290:295)]
+resv_cnt  <- count_2reps(data_venn)
+
+# Both (6 + 6)
+data_venn <- df.prot[, c(296:301, 302:307)]
+both_cnt  <- count_2reps(data_venn)
+
+## raw df
+df_counts_raw <- data.frame(
+  Condition = rep(c("C","E","R","RE"), each = 3),
+  Category  = factor(rep(c("Rep1 only","Rep1∩Rep2","Rep2 only"), times = 4),
+                     levels = c("Rep1 only","Rep1∩Rep2","Rep2 only")),
+  Count     = c(ctrl_cnt, etop_cnt, resv_cnt, both_cnt),
+  row.names = NULL
+)
+
+## collapse
+
+df_counts <- df_counts_raw %>%
+  mutate(Category = as.character(Category)) %>%
+  group_by(Condition) %>%
+  summarise(
+    unique = sum(Count[Category %in% c("Rep1 only","Rep2 only")]),
+    shared = sum(Count[Category == "Rep1∩Rep2"])
+  ) %>%
+  pivot_longer(cols = c(unique, shared),
+               names_to = "Category_simplified",
+               values_to = "Count") %>%
+  ungroup()
+
+# % per treatment
+df_counts$Perc <- ave(df_counts$Count, df_counts$Condition,
+                      FUN = function(x) if (sum(x) == 0) x else x / sum(x))
+
+df_counts$label <- paste0(
+  sprintf("%.0f", df_counts$Perc * 100), "%\n(",
+  df_counts$Count, ")"
+)
+
+df_counts$Category_simplified <- factor(df_counts$Category_simplified,
+                                        levels = c("unique","shared"),
+                                        labels = c("unique","shared"))
+
+ggplot(df_counts, aes(x = Condition, y = Perc, fill = Category_simplified)) +
+  geom_col(width = 0.7, color = "white", linewidth = 0.3) +
+  geom_text(aes(label = label, size = Perc),
+            position = position_stack(vjust = 0.5),
+            color = "black", lineheight = 0.9, show.legend = FALSE) +
+  scale_size_continuous(range = c(5,9)) +
+  scale_fill_manual(values = c(
+    "unique" = "#619CFF",
+    "shared" = "#00BA38"
+  )) +
+  labs(
+    title = "L-540 cryo",
+    x = NULL, y = "", fill = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    legend.position = "bottom",
+    legend.text = element_text(size = 15),
+    axis.text.x = element_text(size = 25),
+    plot.title = element_text(size = 25, hjust = 0.5),
+    axis.title.y = element_blank(),
+    axis.text.y  = element_blank(),
+    axis.ticks.y = element_blank()
+  ) +
+  guides(fill = guide_legend(nrow = 1, byrow = TRUE))
+
+# ---------------- L-428 overlap (3 replicates) ----------------
+
+# read in data
+df <- read.csv("~/proteomics/7_combinedHL/evaluation_paper/abc_2025/results_maxquant/hl428_all_galaxy.txt", sep = "\t")
+
+df.prot <- df
+# remove decoy matches and matches to contaminant
+df.prot <- df.prot[!df.prot$Reverse=="+",]
+df.prot <- df.prot[!df.prot$Potential.contaminant=="+",]
+df.prot <- df.prot[!df.prot$Only.identified.by.site=="+",]
+
+# ---------- count 3 replicates ----------
+count_reps <- function(mat, idx_list) {
+  Rep1 <- rowMeans(mat[, idx_list$Rep1, drop = FALSE], na.rm = TRUE)
+  Rep2 <- rowMeans(mat[, idx_list$Rep2, drop = FALSE], na.rm = TRUE)
+  Rep3 <- rowMeans(mat[, idx_list$Rep3, drop = FALSE], na.rm = TRUE)
+  Rep1[Rep1==0] <- NA; Rep2[Rep2==0] <- NA; Rep3[Rep3==0] <- NA
+  
+  R1 <- which(!is.na(Rep1))
+  R2 <- which(!is.na(Rep2))
+  R3 <- which(!is.na(Rep3))
+  
+  R12 <- intersect(R1, R2)
+  R13 <- intersect(R1, R3)
+  R23 <- intersect(R2, R3)
+  R123 <- intersect(R12, R3)
+  
+  c(
+    `Rep1 only`   = length(setdiff(R1, union(R2, R3))),
+    `Rep2 only`   = length(setdiff(R2, union(R1, R3))),
+    `Rep3 only`   = length(setdiff(R3, union(R1, R2))),
+    `Rep1∩Rep2`   = length(setdiff(R12, R3)),
+    `Rep1∩Rep3`   = length(setdiff(R13, R2)),
+    `Rep2∩Rep3`   = length(setdiff(R23, R1)),
+    `all3`        = length(R123)
+  )
+}
+
+## ---------- CONTROL ----------
+data_venn <- df.prot[, 500:523]
+ctrl_cnt <- count_reps(
+  data_venn,
+  idx_list = list(Rep1 =  1: 9, Rep2 = 10:15, Rep3 = 16:24)
+)
+
+## ---------- ETOPOSIDE ----------
+data_venn <- df.prot[, 524:547]
+etop_cnt <- count_reps(
+  data_venn,
+  idx_list = list(Rep1 =  1: 9, Rep2 = 10:15, Rep3 = 16:24)
+)
+
+## ---------- RESVERATROL ----------
+data_venn <- df.prot[, 548:571]
+resv_cnt <- count_reps(
+  data_venn,
+  idx_list = list(Rep1 =  1: 9, Rep2 = 10:15, Rep3 = 16:24)
+)
+
+## ---------- BOTH ----------
+data_venn <- df.prot[, c(572:586, 588:595)]
+both_cnt <- count_reps(
+  data_venn,
+  idx_list = list(Rep1 =  1: 9, Rep2 = 10:15, Rep3 = 16:23)
+)
+
+## raw df
+df_counts_raw <- data.frame(
+  Condition = rep(c("Control","Etoposide","Resveratrol","Both"), each = 7),
+  Category  = factor(
+    rep(c("Rep1 only","Rep2 only","Rep3 only","Rep1∩Rep2","Rep1∩Rep3","Rep2∩Rep3","all3"), times = 4),
+    levels = c("Rep1 only","Rep2 only","Rep3 only","Rep1∩Rep2","Rep1∩Rep3","Rep2∩Rep3","all3")
+  ),
+  Count     = c(ctrl_cnt, etop_cnt, resv_cnt, both_cnt),
+  row.names = NULL
+)
+
+# Collapse to unique / shared_by_2 / shared_by_3 
+
+df_counts <- df_counts_raw %>%
+  mutate(Category = as.character(Category)) %>%
+  group_by(Condition) %>%
+  summarise(
+    unique      = sum(Count[Category %in% c("Rep1 only","Rep2 only","Rep3 only")]),
+    shared_by_2 = sum(Count[Category %in% c("Rep1∩Rep2","Rep1∩Rep3","Rep2∩Rep3")]),
+    shared_by_3 = sum(Count[Category == "all3"])
+  ) %>%
+  pivot_longer(cols = c(unique, shared_by_2, shared_by_3),
+               names_to = "Category_simplified",
+               values_to = "Count") %>%
+  ungroup()
+
+# % per treatment
+df_counts$Perc <- ave(df_counts$Count, df_counts$Condition,
+                      FUN = function(x) if (sum(x) == 0) x else x / sum(x))
+
+df_counts$label <- paste0(
+  sprintf("%.0f", df_counts$Perc * 100), "%\n(",
+  df_counts$Count, ")"
+)
+
+# short x axis labels
+df_counts$Condition <- factor(df_counts$Condition,
+                              levels = c("Control","Etoposide","Resveratrol","Both"),
+                              labels = c("C","E","R","RE"))
+
+df_counts$Category_simplified <- factor(
+  df_counts$Category_simplified,
+  levels = c("unique","shared_by_2","shared_by_3"),
+  labels = c("unique", "shared in 2 reps", "shared in all 3 reps")
+)
+
+ggplot(df_counts, aes(x = Condition, y = Perc, fill = Category_simplified)) +
+  geom_col(width = 0.7, color = "white", linewidth = 0.3) +
+  geom_text(
+    aes(label = ifelse(Perc > 0.055, label, ""), size = Perc),
+    position = position_stack(vjust = 0.5),
+    color = "black",
+    lineheight = 0.9,
+    show.legend = FALSE
+  ) +
+  scale_size_continuous(range = c(4,9)) +
+  scale_fill_manual(values = c(
+    "unique"               = "#619CFF",
+    "shared in 2 reps"     = "#B8B8B8",
+    "shared in all 3 reps" = "#00BA38"
+  )) +
+  labs(x = NULL, y = "", fill = NULL,
+       title = "L-428") +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    legend.position = "bottom",
+    legend.text = element_text(size = 15),
+    axis.text.x = element_text(size = 25),
+    #axis.text.y = element_text(size = 25),
+    plot.title  = element_text(size = 25, hjust = 0.5),
+    axis.title.y = element_blank(),
+    axis.text.y  = element_blank(),
+    axis.ticks.y = element_blank()
+  ) +
+  guides(fill = guide_legend(nrow = 1, byrow = TRUE))
+
+
+# ---------------- L-540 living overlap (Rep1 / Rep2) ----------------
+
+# read in data
+df <- read.csv("~/proteomics/7_combinedHL/evaluation_paper/abc_2025/results_maxquant/hl540_le_galaxy.txt", sep = "\t")
+
+df.prot <- df
+# remove decoy matches and matches to contaminant
+df.prot <- df.prot[!df.prot$Reverse=="+",]
+df.prot <- df.prot[!df.prot$Potential.contaminant=="+",]
+df.prot <- df.prot[!df.prot$Only.identified.by.site=="+",]
+
+# ---------- count 2 replicates ----------
+count_2reps <- function(mat, idx1, idx2) {
+  Rep1 <- rowMeans(mat[, idx1, drop = FALSE], na.rm = TRUE)
+  Rep2 <- rowMeans(mat[, idx2, drop = FALSE], na.rm = TRUE)
+  Rep1[Rep1 == 0] <- NA; Rep2[Rep2 == 0] <- NA
+  R1 <- which(!is.na(Rep1))
+  R2 <- which(!is.na(Rep2))
+  c(
+    `Rep1 only` = length(setdiff(R1, R2)),
+    `Rep1∩Rep2` = length(intersect(R1, R2)),
+    `Rep2 only` = length(setdiff(R2, R1))
+  )
+}
+
+# ---------------- Counts per condition ----------------
+data_venn <- df.prot[, 320:334]
+ctrl_cnt <- count_2reps(data_venn, idx1 = 1:9,  idx2 = 10:15)
+
+data_venn <- df.prot[, 335:349]
+etop_cnt  <- count_2reps(data_venn, idx1 = 1:9,  idx2 = 10:15)
+
+data_venn <- df.prot[, 350:364]
+resv_cnt  <- count_2reps(data_venn, idx1 = 1:9,  idx2 = 10:15)
+
+data_venn <- df.prot[, 365:379]
+both_cnt  <- count_2reps(data_venn, idx1 = 1:9,  idx2 = 10:15)
+
+# raw df
+df_counts_raw <- data.frame(
+  Condition = rep(c("C","E","R","RE"), each = 3),
+  Category  = factor(rep(c("Rep1 only","Rep1∩Rep2","Rep2 only"), times = 4),
+                     levels = c("Rep1 only","Rep1∩Rep2","Rep2 only")),
+  Count     = c(ctrl_cnt, etop_cnt, resv_cnt, both_cnt),
+  row.names = NULL
+)
+
+# collapse unique/shared
+
+df_counts <- df_counts_raw %>%
+  mutate(Category = as.character(Category)) %>%
+  group_by(Condition) %>%
+  summarise(
+    unique = sum(Count[Category %in% c("Rep1 only","Rep2 only")]),
+    shared = sum(Count[Category == "Rep1∩Rep2"])
+  ) %>%
+  pivot_longer(cols = c(unique, shared),
+               names_to = "Category_simplified",
+               values_to = "Count") %>%
+  ungroup()
+
+# Percent per condition
+df_counts$Perc <- ave(df_counts$Count, df_counts$Condition,
+                      FUN = function(x) if (sum(x) == 0) x else x / sum(x))
+
+df_counts$label <- paste0(
+  sprintf("%.0f", df_counts$Perc * 100), "%\n(",
+  df_counts$Count, ")"
+)
+
+df_counts$Category_simplified <- factor(df_counts$Category_simplified,
+                                        levels = c("unique","shared"),
+                                        labels = c("unique", "shared"))
+
+ggplot(df_counts, aes(x = Condition, y = Perc, fill = Category_simplified)) +
+  geom_col(width = 0.7, color = "white", linewidth = 0.3) +
+  geom_text(aes(label = label, size = Perc),
+            position = position_stack(vjust = 0.5),
+            color = "black", lineheight = 0.9, show.legend = FALSE) +
+  scale_size_continuous(range = c(5, 9)) +
+  scale_fill_manual(values = c(
+    "unique" = "#619CFF",
+    "shared" = "#00BA38"
+  )) +
+  labs(x = NULL, y = "", fill = NULL,
+       title = "L-540 liv") +
+  theme_minimal(base_size = 12)  +
+  theme(
+    panel.grid.major.x = element_blank(),
+    legend.position = "bottom",
+    legend.text = element_text(size = 15),
+    axis.text.x = element_text(size = 25),
+    plot.title = element_text(size = 25, hjust = 0.5),
+    axis.title.y = element_blank(),
+    axis.text.y  = element_blank(),
+    axis.ticks.y = element_blank()
+  ) +
+  guides(fill = guide_legend(nrow = 1, byrow = TRUE))
+
+
+```
+

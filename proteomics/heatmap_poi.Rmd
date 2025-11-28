@@ -246,7 +246,8 @@ pheatmap(
   fontsize_col = 6,
   cellheight = 3.75,      
   cellwidth  = 12,
-  fontsize = 6
+  fontsize = 6,
+  
 )
 
 
