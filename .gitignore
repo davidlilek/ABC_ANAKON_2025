@@ -1,3 +1,7 @@
 *.csv
 *.xlsx
 *.txt
+
+additional/
+
+!proteomics_detailed_results.xlsx

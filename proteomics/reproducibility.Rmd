@@ -56,9 +56,9 @@ ggplot(df, aes(x = Group, y = RSD, fill = Replicate)) +
   facet_wrap(~ CellLine, scales = "fixed") +
   scale_y_continuous(limits = c(0, 25)) +
   labs(
-    x = "Treatment",
+    x = "",
     y = "RSD [%]",
-    fill = "Level reproducibility"
+    fill = "Reproducibility"
   ) +
   theme_minimal(base_size = 14) +
   theme(
@@ -163,7 +163,7 @@ ggplot(df_counts, aes(x = Condition, y = Perc, fill = Category_simplified)) +
   geom_text(aes(label = label, size = Perc),
             position = position_stack(vjust = 0.5),
             color = "black", lineheight = 0.9, show.legend = FALSE) +
-  scale_size_continuous(range = c(5,9)) +
+  scale_size_continuous(range = c(7,10)) +
   scale_fill_manual(values = c(
     "unique" = "#619CFF",
     "shared" = "#00BA38"
@@ -176,7 +176,7 @@ ggplot(df_counts, aes(x = Condition, y = Perc, fill = Category_simplified)) +
   theme(
     panel.grid.major.x = element_blank(),
     legend.position = "bottom",
-    legend.text = element_text(size = 15),
+    legend.text = element_text(size = 20),
     axis.text.x = element_text(size = 25),
     plot.title = element_text(size = 25, hjust = 0.5),
     axis.title.y = element_blank(),
@@ -306,7 +306,7 @@ ggplot(df_counts, aes(x = Condition, y = Perc, fill = Category_simplified)) +
     lineheight = 0.9,
     show.legend = FALSE
   ) +
-  scale_size_continuous(range = c(4,9)) +
+  scale_size_continuous(range = c(7,10)) +
   scale_fill_manual(values = c(
     "unique"               = "#619CFF",
     "shared in 2 reps"     = "#B8B8B8",
@@ -318,7 +318,7 @@ ggplot(df_counts, aes(x = Condition, y = Perc, fill = Category_simplified)) +
   theme(
     panel.grid.major.x = element_blank(),
     legend.position = "bottom",
-    legend.text = element_text(size = 15),
+    legend.text = element_text(size = 20),
     axis.text.x = element_text(size = 25),
     #axis.text.y = element_text(size = 25),
     plot.title  = element_text(size = 25, hjust = 0.5),
@@ -408,7 +408,7 @@ ggplot(df_counts, aes(x = Condition, y = Perc, fill = Category_simplified)) +
   geom_text(aes(label = label, size = Perc),
             position = position_stack(vjust = 0.5),
             color = "black", lineheight = 0.9, show.legend = FALSE) +
-  scale_size_continuous(range = c(5, 9)) +
+  scale_size_continuous(range = c(7,10)) +
   scale_fill_manual(values = c(
     "unique" = "#619CFF",
     "shared" = "#00BA38"
@@ -419,7 +419,7 @@ ggplot(df_counts, aes(x = Condition, y = Perc, fill = Category_simplified)) +
   theme(
     panel.grid.major.x = element_blank(),
     legend.position = "bottom",
-    legend.text = element_text(size = 15),
+    legend.text = element_text(size = 20),
     axis.text.x = element_text(size = 25),
     plot.title = element_text(size = 25, hjust = 0.5),
     axis.title.y = element_blank(),
@@ -430,4 +430,3 @@ ggplot(df_counts, aes(x = Condition, y = Perc, fill = Category_simplified)) +
 
 
 ```
-

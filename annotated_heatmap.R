@@ -31,6 +31,29 @@ read_one_set <- function(label, path){
 # alle Datensätze einlesen und zusammenführen
 final_df <- purrr::map2(names(ds), ds, read_one_set) |> purrr::list_rbind()
 
+
+# Mapping definieren: alte -> neue Namen
+map_treat <- c(
+  "C_vs_E"  = "E_vs_C",
+  "C_vs_RE" = "RE_vs_C",
+  "C_vs_R"  = "R_vs_C"
+)
+
+final_df$treatment <- as.character(final_df$treatment)
+
+
+# Welche Zeilen müssen geändert werden?
+idx <- final_df$treatment %in% names(map_treat)
+
+# 1) treatment umbenennen
+final_df$treatment[idx] <- map_treat[ final_df$treatment[idx] ]
+
+# 2) logFC Vorzeichen umdrehen
+final_df$logFC_new[idx] <- final_df$logFC[idx] * -1
+
+
+
+
 # logFC begrenzen
 final_df$logFC[!is.na(final_df$logFC) & final_df$logFC >  4] <-  4
 final_df$logFC[!is.na(final_df$logFC) & final_df$logFC < -4] <- -4
