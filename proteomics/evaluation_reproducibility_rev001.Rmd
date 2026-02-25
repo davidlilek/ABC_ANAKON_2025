@@ -37,6 +37,8 @@ library(eulerr)
 library(UniprotR)
 library(stringr)
 library(ggfittext)
+library(plotly)
+library(pcaMethods)
 ```
 
 # l-540 living
@@ -62,6 +64,7 @@ df.LFQ <- df.prot[, c(320:334)]
 df.LFQ[df.LFQ == 0] <- NA; print(colnames(df.LFQ))
 
 ```
+
 ```{r}
 # ensure numeric matrix
 df.LFQ.log2 <- as.data.frame(lapply(df.LFQ, as.numeric))
@@ -118,7 +121,7 @@ X_t <- t(X.cc)
 # -------------------------
 # 2) PCA
 # -------------------------
-pca <- prcomp(X_t, center = TRUE, scale. = TRUE)
+pca <- prcomp(X_t, center = TRUE, scale. = FALSE)
 
 # variance explained
 pvar <- (pca$sdev^2) / sum(pca$sdev^2)
@@ -350,7 +353,7 @@ X_t <- t(X.cc)
 # -------------------------
 # 2) PCA
 # -------------------------
-pca <- prcomp(X_t, center = TRUE, scale. = TRUE)
+pca <- prcomp(X_t, center = TRUE, scale. = FALSE)
 
 # variance explained
 pvar <- (pca$sdev^2) / sum(pca$sdev^2)
@@ -581,7 +584,7 @@ X_t <- t(X.cc)
 # -------------------------
 # 2) PCA
 # -------------------------
-pca <- prcomp(X_t, center = TRUE, scale. = TRUE)
+pca <- prcomp(X_t, center = TRUE, scale. = FALSE)
 
 # variance explained
 pvar <- (pca$sdev^2) / sum(pca$sdev^2)
@@ -812,7 +815,7 @@ X_t <- t(X.cc)
 # -------------------------
 # 2) PCA
 # -------------------------
-pca <- prcomp(X_t, center = TRUE, scale. = TRUE)
+pca <- prcomp(X_t, center = TRUE, scale. = FALSE)
 
 # variance explained
 pvar <- (pca$sdev^2) / sum(pca$sdev^2)
@@ -963,6 +966,456 @@ ggplot(ta_long, aes(x = Rank, y = log2_Intensity, color = Group)) +
 
 ```
 
+## Compare All
+
+```{r}
+df <- read.csv("./results_maxquant/hl540_le_galaxy.txt", sep = "\t")
+df.prot <- df
+
+# Remove reverse/contaminant/site-only identifications
+df.prot <- df.prot[!df.prot$Reverse == "+", ]
+df.prot <- df.prot[!df.prot$Potential.contaminant == "+", ]
+df.prot <- df.prot[!df.prot$Only.identified.by.site == "+", ]
+
+df.prot[df.prot == 0] <- NA
+
+df.LFQ <- df.prot[,c(320:379)]
+```
+
+
+
+### CV calculation
+
+```{r}
+n <- ncol(df.LFQ)   
+block_sizes <- rep(c(9, 6), length.out = ceiling(n / 6))
+block_sizes <- block_sizes[cumsum(block_sizes) <= n]
+if (length(block_sizes) == 0) {
+  stop("too less columns")
+}
+
+ends <- cumsum(block_sizes)
+starts <- c(1, head(ends, -1) + 1)
+
+# generate df mean
+df_mean <- as.data.frame(
+  sapply(seq_along(starts),
+         function(i) rowMeans(df.LFQ[, starts[i]:ends[i], drop = FALSE], na.rm = TRUE))
+)
+
+# col names
+colnames(df_mean) <- paste0("block", seq_along(starts))
+
+# calculate cv per biological replicate
+cv_fun <- function(x) {
+  # falls mean == 0 -> NA vermeiden
+  m <- mean(x, na.rm = TRUE)
+  if (is.na(m) || m == 0) return(NA_real_)
+  sd(x, na.rm = TRUE) / m
+}
+# define pairs
+pairs <- list(c(1,2), c(3,4), c(5,6), c(7,8))
+# check if columns exist
+pairs <- Filter(function(cols) all(cols <= ncol(df_mean)), pairs)
+
+# rowwise cv
+cv_rowwise <- sapply(pairs, function(cols) {
+  apply(df_mean[, cols, drop = FALSE], 1, function(x) cv_fun(x))
+})
+cv_rowwise <- as.data.frame(cv_rowwise)
+# name columns
+colnames(cv_rowwise) <- c("Control", "Etoposide", "Resveratrol", "RE")[seq_along(pairs)]
+
+# long format for plotting
+cv_long <- pivot_longer(as.data.frame(cv_rowwise),
+                        cols = everything(),
+                        names_to = "Treatment",
+                        values_to = "cv")
+
+ggplot(cv_long, aes(x = Treatment, y = cv)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(
+    x = "Spaltenpaar",
+    y = "CV"
+    )
+
+
+colMeans(cv_rowwise*100, na.rm = TRUE)
+apply(cv_rowwise*100, 2, median, na.rm = TRUE)
+
+result_list <- lapply(colnames(cv_rowwise), function(col) {
+  
+  cv_values <- cv_rowwise[[col]]
+  
+  data.frame(
+    Group = col,
+    Median_CV = median(cv_values, na.rm = TRUE),
+    IQR_CV = IQR(cv_values, na.rm = TRUE),
+    Range_CV = max(cv_values, na.rm = TRUE) - min(cv_values, na.rm = TRUE),
+    CV_lt_10 = mean(cv_values < 0.1, na.rm = TRUE) * 100,
+    CV_lt_20 = mean(cv_values < 0.2, na.rm = TRUE) * 100,
+    CV_gt_30 = mean(cv_values > 0.3, na.rm = TRUE) * 100
+  )
+})
+
+summary_df <- do.call(rbind, result_list)
+summary_df
+```
+
+### PCA 
+
+#### per biological replicate
+
+```{r}
+df.LFQ <- df.prot[,c(320:379)]
+df.LFQ <- log2(df.LFQ)
+fn <- colnames(df.LFQ)
+
+# shorten filenames
+fn_short <- sub("^LFQ\\.intensity\\.", "", fn)
+fn_short <- sub("^.*LE_", "", fn_short)
+fn_short <- sub("\\.raw\\.thermo\\.raw$", "", fn_short)
+fn_short
+# rename them
+colnames(df.LFQ) <- fn_short
+
+
+mat <- df.LFQ[,c(1:9,
+                 16:24,
+                 31:39,
+                 46:54)]
+mat <- as.data.frame(lapply(mat, as.numeric))
+mat <- mat[rowSums(!is.na(mat)) > 0, , drop = FALSE]
+#mat[mat == "NaN"] <- NA
+#mat <- llsImpute(as.matrix(mat), k = 5, correlation = "pearson", allVariables = TRUE)
+#mat <- as.data.frame(completeObs(mat))
+mat_cc <- mat[complete.cases(mat), , drop = FALSE]
+v <- apply(mat_cc, 1, var)
+mat_cc <- mat_cc[v > 0, , drop = FALSE]
+pca_res <- prcomp(t(mat_cc), center = TRUE, scale. = FALSE)
+
+# plot it
+scores <- as.data.frame(pca_res$x)
+scores$Filename <- rownames(scores)
+
+
+plot_ly(
+  scores,
+  x = ~PC1, 
+  y = ~PC2,
+  type = "scatter",
+  mode = "markers+text",      
+  text = ~Filename,
+  textposition = "top center",  
+  marker = list(size = 10)
+) %>%
+  plotly::layout(
+    xaxis = list(title = paste0("PC1 (", 
+                                round(summary(pca_res)$importance[2,1] * 100, 1), "%)")),
+    yaxis = list(title = paste0("PC2 (", 
+                                round(summary(pca_res)$importance[2,2] * 100, 1), "%)"))
+  )
+
+
+
+
+
+```
+
+```{r}
+df.LFQ <- df.prot[,c(320:379)]
+df.LFQ <- log2(df.LFQ)
+fn <- colnames(df.LFQ)
+
+# shorten filenames
+fn_short <- sub("^LFQ\\.intensity\\.", "", fn)
+fn_short <- sub("^.*LE_", "", fn_short)
+fn_short <- sub("\\.raw\\.thermo\\.raw$", "", fn_short)
+fn_short
+# rename them
+colnames(df.LFQ) <- fn_short
+
+
+mat <- df.LFQ[,-c(1:9,
+                 16:24,
+                 31:39,
+                 46:54)]
+mat <- as.data.frame(lapply(mat, as.numeric))
+mat <- mat[rowSums(!is.na(mat)) > 0, , drop = FALSE]
+#mat[mat == "NaN"] <- NA
+#mat <- llsImpute(as.matrix(mat), k = 5, correlation = "pearson", allVariables = TRUE)
+#mat <- as.data.frame(completeObs(mat))
+mat_cc <- mat[complete.cases(mat), , drop = FALSE]
+v <- apply(mat_cc, 1, var)
+mat_cc <- mat_cc[v > 0, , drop = FALSE]
+pca_res <- prcomp(t(mat_cc), center = TRUE, scale. = FALSE)
+
+# plot it
+scores <- as.data.frame(pca_res$x)
+scores$Filename <- rownames(scores)
+
+
+plot_ly(
+  scores,
+  x = ~PC1, 
+  y = ~PC2,
+  type = "scatter",
+  mode = "markers+text",      
+  text = ~Filename,
+  textposition = "top center",  
+  marker = list(size = 10)
+) %>%
+  plotly::layout(
+    xaxis = list(title = paste0("PC1 (", 
+                                round(summary(pca_res)$importance[2,1] * 100, 1), "%)")),
+    yaxis = list(title = paste0("PC2 (", 
+                                round(summary(pca_res)$importance[2,2] * 100, 1), "%)"))
+  )
+
+
+
+
+
+```
+
+#### all
+
+```{r}
+df.LFQ <- df.prot[,c(320:379)]
+df.LFQ <- log2(df.LFQ)
+fn <- colnames(df.LFQ)
+
+# shorten filenames
+fn_short <- sub("^LFQ\\.intensity\\.", "", fn)
+fn_short <- sub("^.*LE_", "", fn_short)
+fn_short <- sub("\\.raw\\.thermo\\.raw$", "", fn_short)
+fn_short
+# rename them
+colnames(df.LFQ) <- fn_short
+
+
+mat <- df.LFQ
+mat <- as.data.frame(lapply(mat, as.numeric))
+mat <- mat[rowSums(!is.na(mat)) > 0, , drop = FALSE]
+#mat[mat == "NaN"] <- NA
+#mat <- llsImpute(as.matrix(mat), k = 5, correlation = "pearson", allVariables = TRUE)
+#mat <- as.data.frame(completeObs(mat))
+mat_cc <- mat[complete.cases(mat), , drop = FALSE]
+v <- apply(mat_cc, 1, var)
+mat_cc <- mat_cc[v > 0, , drop = FALSE]
+pca_res <- prcomp(t(mat_cc), center = TRUE, scale. = FALSE)
+
+# plot it
+scores <- as.data.frame(pca_res$x)
+scores$Filename <- rownames(scores)
+
+
+plot_ly(
+  scores,
+  x = ~PC1, 
+  y = ~PC2,
+  type = "scatter",
+  mode = "markers+text",      
+  text = ~Filename,
+  textposition = "top center",  
+  marker = list(size = 10)
+) %>%
+  plotly::layout(
+    xaxis = list(title = paste0("PC1 (", 
+                                round(summary(pca_res)$importance[2,1] * 100, 1), "%)")),
+    yaxis = list(title = paste0("PC2 (", 
+                                round(summary(pca_res)$importance[2,2] * 100, 1), "%)"))
+  )
+
+
+
+
+
+```
+
+
+#### pooled measuring replicates
+
+```{r}
+df.LFQ <- df.prot[,c(320:379)]
+df.LFQ <- log2(df.LFQ)
+fn <- colnames(df.LFQ)
+
+
+
+# shorten filenames
+fn_short <- sub("^LFQ\\.intensity\\.", "", fn)
+fn_short <- sub("^.*LE_", "", fn_short)
+fn_short <- sub("\\.raw\\.thermo\\.raw$", "", fn_short)
+fn_short
+# rename them
+colnames(df.LFQ) <- fn_short
+
+
+# Anzahl Spalten prüfen
+n <- ncol(df.LFQ)
+
+# Sicherstellen, dass durch 3 teilbar
+if(n %% 3 != 0) stop("Spaltenzahl nicht durch 3 teilbar!")
+
+# Mittelwerte berechnen
+df.mean <- sapply(seq(1, n, by = 3), function(i) {
+  rowMeans(df.LFQ[, i:(i+2)], na.rm = TRUE)
+})
+
+# Spaltennamen: jeweils Name der ersten Spalte jeder Dreiergruppe
+colnames(df.mean) <- colnames(df.LFQ)[seq(1, n, by = 3)]
+
+df.mean <- as.data.frame(df.mean)
+
+mat <- df.mean
+mat <- as.data.frame(lapply(mat, as.numeric))
+mat <- mat[rowSums(!is.na(mat)) > 0, , drop = FALSE]
+#mat[mat == "NaN"] <- NA
+#mat <- llsImpute(as.matrix(mat), k = 5, correlation = "pearson", allVariables = TRUE)
+#mat <- as.data.frame(completeObs(mat))
+mat_cc <- mat[complete.cases(mat), , drop = FALSE]
+v <- apply(mat_cc, 1, var)
+mat_cc <- mat_cc[v > 0, , drop = FALSE]
+pca_res <- prcomp(t(mat_cc), center = TRUE, scale. = FALSE)
+
+# plot it
+scores <- as.data.frame(pca_res$x)
+scores$Filename <- rownames(scores)
+
+
+plot_ly(
+  scores,
+  x = ~PC1, 
+  y = ~PC2,
+  type = "scatter",
+  mode = "markers+text",      
+  text = ~Filename,
+  textposition = "top center",  
+  marker = list(size = 10)
+) %>%
+  plotly::layout(
+    xaxis = list(title = paste0("PC1 (", 
+                                round(summary(pca_res)$importance[2,1] * 100, 1), "%)")),
+    yaxis = list(title = paste0("PC2 (", 
+                                round(summary(pca_res)$importance[2,2] * 100, 1), "%)"))
+  )
+
+
+
+
+
+```
+
+#### pooled biological replicates
+
+
+
+```{r}
+df.LFQ <- df.prot[,c(320:379)]
+df.LFQ <- log2(df.LFQ)
+fn <- colnames(df.LFQ)
+
+# shorten filenames
+fn_short <- sub("^LFQ\\.intensity\\.", "", fn)
+fn_short <- sub("^.*LE_", "", fn_short)
+fn_short <- sub("\\.raw\\.thermo\\.raw$", "", fn_short)
+fn_short
+# rename them
+colnames(df.LFQ) <- fn_short
+
+### replicate level
+n <- ncol(df.LFQ)
+
+block_sizes <- rep(c(9, 6), length.out = ceiling(n / 6))
+block_sizes <- block_sizes[cumsum(block_sizes) <= n]
+
+if (length(block_sizes) == 0) stop("too less columns")
+
+ends <- cumsum(block_sizes)
+starts <- c(1, head(ends, -1) + 1)
+
+df_mean <- as.data.frame(
+  sapply(seq_along(starts),
+         function(i) rowMeans(df.LFQ[, starts[i]:ends[i], drop = FALSE], na.rm = TRUE))
+)
+
+colnames(df_mean) <- colnames(df.LFQ)[starts]
+
+mat <- df.LFQ
+mat <- df_mean
+mat <- as.data.frame(lapply(mat, as.numeric))
+mat <- mat[rowSums(!is.na(mat)) > 0, , drop = FALSE]
+#mat[mat == "NaN"] <- NA
+#mat <- llsImpute(as.matrix(mat), k = 5, correlation = "pearson", allVariables = TRUE)
+#mat <- as.data.frame(completeObs(mat))
+mat_cc <- mat[complete.cases(mat), , drop = FALSE]
+v <- apply(mat_cc, 1, var)
+mat_cc <- mat_cc[v > 0, , drop = FALSE]
+pca_res <- prcomp(t(mat_cc), center = TRUE, scale. = FALSE)
+
+# plot it
+scores <- as.data.frame(pca_res$x)
+scores$Filename <- rownames(scores)
+
+
+plot_ly(
+  scores,
+  x = ~PC1, 
+  y = ~PC2,
+  type = "scatter",
+  mode = "markers+text",      
+  text = ~Filename,
+  textposition = "top center",  
+  marker = list(size = 10)
+) %>%
+  plotly::layout(
+    xaxis = list(title = paste0("PC1 (", 
+                                round(summary(pca_res)$importance[2,1] * 100, 1), "%)")),
+    yaxis = list(title = paste0("PC2 (", 
+                                round(summary(pca_res)$importance[2,2] * 100, 1), "%)"))
+  )
+
+
+
+
+
+```
+
+### Heatmap
+
+```{r}
+# ensure numeric matrix
+df.LFQ.log2 <- as.data.frame(lapply(df.LFQ, as.numeric))
+
+# replace ±Inf with NA
+df.LFQ.log2[is.infinite(as.matrix(df.LFQ.log2))] <- NA
+
+# remove rows containing only NA values
+df.LFQ.log2 <- df.LFQ.log2[rowSums(is.na(df.LFQ.log2)) < ncol(df.LFQ.log2), ]
+
+# shorten col names
+colnames(df.LFQ.log2) <- fn_short
+
+
+paletteLength <- 20
+
+myColor <- colorRampPalette(c("navy", "white",
+                                  "firebrick3"))(paletteLength)
+pheatmap(as.matrix(na.omit(df.LFQ.log2)),
+         color = myColor,
+         treeheight_row = 10,
+         angle_col ="90",
+         treeheight_col = 10,
+         legend = TRUE,
+         labels_col = colnames(df.LFQ.log2),
+         show_rownames = FALSE)
+```
+
+
+
+
 
 
 # l-540 cryo
@@ -1046,7 +1499,7 @@ X_t <- t(X.cc)
 # -------------------------
 # 2) PCA
 # -------------------------
-pca <- prcomp(X_t, center = TRUE, scale. = TRUE)
+pca <- prcomp(X_t, center = TRUE, scale. = FALSE)
 
 # variance explained
 pvar <- (pca$sdev^2) / sum(pca$sdev^2)
@@ -1275,7 +1728,7 @@ X_t <- t(X.cc)
 # -------------------------
 # 2) PCA
 # -------------------------
-pca <- prcomp(X_t, center = TRUE, scale. = TRUE)
+pca <- prcomp(X_t, center = TRUE, scale. = FALSE)
 
 # variance explained
 pvar <- (pca$sdev^2) / sum(pca$sdev^2)
@@ -1504,7 +1957,7 @@ X_t <- t(X.cc)
 # -------------------------
 # 2) PCA
 # -------------------------
-pca <- prcomp(X_t, center = TRUE, scale. = TRUE)
+pca <- prcomp(X_t, center = TRUE, scale. = FALSE)
 
 # variance explained
 pvar <- (pca$sdev^2) / sum(pca$sdev^2)
@@ -1732,7 +2185,7 @@ X_t <- t(X.cc)
 # -------------------------
 # 2) PCA
 # -------------------------
-pca <- prcomp(X_t, center = TRUE, scale. = TRUE)
+pca <- prcomp(X_t, center = TRUE, scale. = FALSE)
 
 # variance explained
 pvar <- (pca$sdev^2) / sum(pca$sdev^2)
@@ -1884,6 +2337,480 @@ ggplot(ta_long, aes(x = Rank, y = log2_Intensity, color = Group)) +
 
 ```
 
+## Compare All
+
+```{r}
+df <- read.csv("./results_maxquant/hl540_cryo_galaxy.txt", sep = "\t")
+df.prot <- df
+
+# Remove reverse/contaminant/site-only identifications
+df.prot <- df.prot[!df.prot$Reverse == "+", ]
+df.prot <- df.prot[!df.prot$Potential.contaminant == "+", ]
+df.prot <- df.prot[!df.prot$Only.identified.by.site == "+", ]
+
+df.prot[df.prot == 0] <- NA
+
+df.LFQ <- df.prot[,c(260:262, 266:271,
+                     272:277, 278:283,
+                     296:301, 302:307,
+                     284:289, 290:295)]
+```
+
+### CV caluclation
+
+```{r}
+n <- ncol(df.LFQ)
+
+block_sizes <- c(3, 6, 6, 6, 6, 6, 6, 6)
+
+if (sum(block_sizes) != n) stop("block sizes do not match column number")
+
+ends <- cumsum(block_sizes)
+starts <- c(1, head(ends, -1) + 1)
+
+starts
+ends
+
+# generate df mean
+df_mean <- as.data.frame(
+  sapply(seq_along(starts),
+         function(i) rowMeans(df.LFQ[, starts[i]:ends[i], drop = FALSE], na.rm = TRUE))
+)
+
+# col names
+colnames(df_mean) <- paste0("block", seq_along(starts))
+
+# calculate cv per biological replicate
+cv_fun <- function(x) {
+  # falls mean == 0 -> NA vermeiden
+  m <- mean(x, na.rm = TRUE)
+  if (is.na(m) || m == 0) return(NA_real_)
+  sd(x, na.rm = TRUE) / m
+}
+# define pairs
+pairs <- list(c(1,2), c(3,4), c(5,6), c(7,8))
+# check if columns exist
+pairs <- Filter(function(cols) all(cols <= ncol(df_mean)), pairs)
+
+# rowwise cv
+cv_rowwise <- sapply(pairs, function(cols) {
+  apply(df_mean[, cols, drop = FALSE], 1, function(x) cv_fun(x))
+})
+cv_rowwise <- as.data.frame(cv_rowwise)
+# name columns
+colnames(cv_rowwise) <- c("Control", "Etoposide", "RE", "Resveratrol")[seq_along(pairs)]
+
+# long format for plotting
+cv_long <- pivot_longer(as.data.frame(cv_rowwise),
+                        cols = everything(),
+                        names_to = "Treatment",
+                        values_to = "cv")
+
+ggplot(cv_long, aes(x = Treatment, y = cv)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(
+    x = "Spaltenpaar",
+    y = "CV"
+    )
+
+
+colMeans(cv_rowwise*100, na.rm = TRUE)
+apply(cv_rowwise*100, 2, median, na.rm = TRUE)
+
+result_list <- lapply(colnames(cv_rowwise), function(col) {
+  
+  cv_values <- cv_rowwise[[col]]
+  
+  data.frame(
+    Group = col,
+    Median_CV = median(cv_values, na.rm = TRUE),
+    IQR_CV = IQR(cv_values, na.rm = TRUE),
+    Range_CV = max(cv_values, na.rm = TRUE) - min(cv_values, na.rm = TRUE),
+    CV_lt_10 = mean(cv_values < 0.1, na.rm = TRUE) * 100,
+    CV_lt_20 = mean(cv_values < 0.2, na.rm = TRUE) * 100,
+    CV_gt_30 = mean(cv_values > 0.3, na.rm = TRUE) * 100
+  )
+})
+
+summary_df <- do.call(rbind, result_list)
+summary_df
+```
+
+
+
+### PCA 
+
+##### per biological replicate
+
+```{r}
+
+df.LFQ <- df.prot[,c(260:262, 266:271,
+                     272:277, 278:283,
+                     296:301, 302:307,
+                     284:289, 290:295)]
+
+df.LFQ <- log2(df.LFQ)
+fn <- colnames(df.LFQ)
+
+# shorten filenames
+fn_short <- sub("^LFQ\\.intensity\\.", "", fn)
+fn_short <- sub("^.*CR_", "", fn_short)
+fn_short <- sub("\\.raw\\.thermo\\.raw$", "", fn_short)
+fn_short
+# rename them
+colnames(df.LFQ) <- fn_short
+
+
+
+mat <- df.LFQ[,c(1:3,
+                 10:15,
+                 22:27,
+                 34:39)]
+mat <- as.data.frame(lapply(mat, as.numeric))
+mat <- mat[rowSums(!is.na(mat)) > 0, , drop = FALSE]
+mat_cc <- mat[complete.cases(mat), , drop = FALSE]
+v <- apply(mat_cc, 1, var)
+mat_cc <- mat_cc[v > 0, , drop = FALSE]
+pca_res <- prcomp(t(mat_cc), center = TRUE, scale. = FALSE)
+
+# plot it
+scores <- as.data.frame(pca_res$x)
+scores$Filename <- rownames(scores)
+
+
+
+plot_ly(
+  scores,
+  x = ~PC1, 
+  y = ~PC2,
+  type = "scatter",
+  mode = "markers+text",        
+  text = ~Filename,
+  textposition = "top center",  
+  marker = list(size = 10)
+) %>%
+  plotly::layout(
+    xaxis = list(title = paste0("PC1 (", 
+                                round(summary(pca_res)$importance[2,1] * 100, 1), "%)")),
+    yaxis = list(title = paste0("PC2 (", 
+                                round(summary(pca_res)$importance[2,2] * 100, 1), "%)"))
+  )
+
+
+
+
+
+```
+
+```{r}
+
+df.LFQ <- df.prot[,c(260:262, 266:271,
+                     272:277, 278:283,
+                     296:301, 302:307,
+                     284:289, 290:295)]
+
+df.LFQ <- log2(df.LFQ)
+fn <- colnames(df.LFQ)
+
+# shorten filenames
+fn_short <- sub("^LFQ\\.intensity\\.", "", fn)
+fn_short <- sub("^.*CR_", "", fn_short)
+fn_short <- sub("\\.raw\\.thermo\\.raw$", "", fn_short)
+fn_short
+# rename them
+colnames(df.LFQ) <- fn_short
+
+
+
+mat <- df.LFQ[,-c(1:3,
+                 10:15,
+                 22:27,
+                 34:39)]
+mat <- as.data.frame(lapply(mat, as.numeric))
+mat <- mat[rowSums(!is.na(mat)) > 0, , drop = FALSE]
+mat_cc <- mat[complete.cases(mat), , drop = FALSE]
+v <- apply(mat_cc, 1, var)
+mat_cc <- mat_cc[v > 0, , drop = FALSE]
+pca_res <- prcomp(t(mat_cc), center = TRUE, scale. = FALSE)
+
+# plot it
+scores <- as.data.frame(pca_res$x)
+scores$Filename <- rownames(scores)
+
+
+
+plot_ly(
+  scores,
+  x = ~PC1, 
+  y = ~PC2,
+  type = "scatter",
+  mode = "markers+text",        
+  text = ~Filename,
+  textposition = "top center",  
+  marker = list(size = 10)
+) %>%
+  plotly::layout(
+    xaxis = list(title = paste0("PC1 (", 
+                                round(summary(pca_res)$importance[2,1] * 100, 1), "%)")),
+    yaxis = list(title = paste0("PC2 (", 
+                                round(summary(pca_res)$importance[2,2] * 100, 1), "%)"))
+  )
+
+
+
+
+
+```
+
+
+
+
+##### all
+
+```{r}
+
+df.LFQ <- df.prot[,c(260:262, 266:271,
+                     272:277, 278:283,
+                     296:301, 302:307,
+                     284:289, 290:295)]
+
+df.LFQ <- log2(df.LFQ)
+fn <- colnames(df.LFQ)
+
+# shorten filenames
+fn_short <- sub("^LFQ\\.intensity\\.", "", fn)
+fn_short <- sub("^.*CR_", "", fn_short)
+fn_short <- sub("\\.raw\\.thermo\\.raw$", "", fn_short)
+fn_short
+# rename them
+colnames(df.LFQ) <- fn_short
+
+
+
+mat <- df.LFQ
+mat <- as.data.frame(lapply(mat, as.numeric))
+mat <- mat[rowSums(!is.na(mat)) > 0, , drop = FALSE]
+mat_cc <- mat[complete.cases(mat), , drop = FALSE]
+v <- apply(mat_cc, 1, var)
+mat_cc <- mat_cc[v > 0, , drop = FALSE]
+pca_res <- prcomp(t(mat_cc), center = TRUE, scale. = FALSE)
+
+# plot it
+scores <- as.data.frame(pca_res$x)
+scores$Filename <- rownames(scores)
+
+
+
+plot_ly(
+  scores,
+  x = ~PC1, 
+  y = ~PC2,
+  type = "scatter",
+  mode = "markers+text",        
+  text = ~Filename,
+  textposition = "top center",  
+  marker = list(size = 10)
+) %>%
+  plotly::layout(
+    xaxis = list(title = paste0("PC1 (", 
+                                round(summary(pca_res)$importance[2,1] * 100, 1), "%)")),
+    yaxis = list(title = paste0("PC2 (", 
+                                round(summary(pca_res)$importance[2,2] * 100, 1), "%)"))
+  )
+
+
+
+
+
+```
+
+
+
+##### pooled measuring replicates
+
+```{r}
+
+df.LFQ <- df.prot[,c(260:262, 266:271,
+                     272:277, 278:283,
+                     296:301, 302:307,
+                     284:289, 290:295)]
+
+df.LFQ <- log2(df.LFQ)
+fn <- colnames(df.LFQ)
+
+# shorten filenames
+fn_short <- sub("^LFQ\\.intensity\\.", "", fn)
+fn_short <- sub("^.*CR_", "", fn_short)
+fn_short <- sub("\\.raw\\.thermo\\.raw$", "", fn_short)
+fn_short
+# rename them
+colnames(df.LFQ) <- fn_short
+
+# Anzahl Spalten prüfen
+n <- ncol(df.LFQ)
+
+# Sicherstellen, dass durch 3 teilbar
+if(n %% 3 != 0) stop("Spaltenzahl nicht durch 3 teilbar!")
+
+# Mittelwerte berechnen
+df.mean <- sapply(seq(1, n, by = 3), function(i) {
+  rowMeans(df.LFQ[, i:(i+2)], na.rm = TRUE)
+})
+
+# Spaltennamen: jeweils Name der ersten Spalte jeder Dreiergruppe
+colnames(df.mean) <- colnames(df.LFQ)[seq(1, n, by = 3)]
+
+df.mean <- as.data.frame(df.mean)
+
+mat <- df.mean
+
+mat <- as.data.frame(lapply(mat, as.numeric))
+mat <- mat[rowSums(!is.na(mat)) > 0, , drop = FALSE]
+mat_cc <- mat[complete.cases(mat), , drop = FALSE]
+v <- apply(mat_cc, 1, var)
+mat_cc <- mat_cc[v > 0, , drop = FALSE]
+pca_res <- prcomp(t(mat_cc), center = TRUE, scale. = FALSE)
+
+# plot it
+scores <- as.data.frame(pca_res$x)
+scores$Filename <- rownames(scores)
+
+
+
+plot_ly(
+  scores,
+  x = ~PC1, 
+  y = ~PC2,
+  type = "scatter",
+  mode = "markers+text",        
+  text = ~Filename,
+  textposition = "top center",  
+  marker = list(size = 10)
+) %>%
+  plotly::layout(
+    xaxis = list(title = paste0("PC1 (", 
+                                round(summary(pca_res)$importance[2,1] * 100, 1), "%)")),
+    yaxis = list(title = paste0("PC2 (", 
+                                round(summary(pca_res)$importance[2,2] * 100, 1), "%)"))
+  )
+
+
+
+
+
+```
+
+
+
+##### pooled biological replicates
+
+```{r}
+
+df.LFQ <- df.prot[,c(260:262, 266:271,
+                     272:277, 278:283,
+                     296:301, 302:307,
+                     284:289, 290:295)]
+
+df.LFQ <- log2(df.LFQ)
+fn <- colnames(df.LFQ)
+
+# shorten filenames
+fn_short <- sub("^LFQ\\.intensity\\.", "", fn)
+fn_short <- sub("^.*CR_", "", fn_short)
+fn_short <- sub("\\.raw\\.thermo\\.raw$", "", fn_short)
+fn_short
+# rename them
+colnames(df.LFQ) <- fn_short
+
+### replicate level
+n <- ncol(df.LFQ)
+block_sizes <- c(3, 6, 6, 6, 6, 6, 6, 6)
+
+ends <- cumsum(block_sizes)
+starts <- c(1, head(ends, -1) + 1)
+
+df_mean <- as.data.frame(
+  sapply(seq_along(starts),
+         function(i) rowMeans(df.LFQ[, starts[i]:ends[i], drop = FALSE], na.rm = TRUE))
+)
+
+colnames(df_mean) <- colnames(df.LFQ)[starts]
+
+mat <- df_mean
+mat <- as.data.frame(lapply(mat, as.numeric))
+mat <- mat[rowSums(!is.na(mat)) > 0, , drop = FALSE]
+mat_cc <- mat[complete.cases(mat), , drop = FALSE]
+v <- apply(mat_cc, 1, var)
+mat_cc <- mat_cc[v > 0, , drop = FALSE]
+pca_res <- prcomp(t(mat_cc), center = TRUE, scale. = FALSE)
+
+# plot it
+scores <- as.data.frame(pca_res$x)
+scores$Filename <- rownames(scores)
+
+
+
+plot_ly(
+  scores,
+  x = ~PC1, 
+  y = ~PC2,
+  type = "scatter",
+  mode = "markers+text",        
+  text = ~Filename,
+  textposition = "top center",  
+  marker = list(size = 10)
+) %>%
+  plotly::layout(
+    xaxis = list(title = paste0("PC1 (", 
+                                round(summary(pca_res)$importance[2,1] * 100, 1), "%)")),
+    yaxis = list(title = paste0("PC2 (", 
+                                round(summary(pca_res)$importance[2,2] * 100, 1), "%)"))
+  )
+
+
+
+
+
+```
+
+
+
+### Heatmap
+
+```{r}
+# ensure numeric matrix
+df.LFQ.log2 <- as.data.frame(lapply(df.LFQ, as.numeric))
+
+# replace ±Inf with NA
+df.LFQ.log2[is.infinite(as.matrix(df.LFQ.log2))] <- NA
+
+# remove rows containing only NA values
+df.LFQ.log2 <- df.LFQ.log2[rowSums(is.na(df.LFQ.log2)) < ncol(df.LFQ.log2), ]
+
+# shorten col names
+colnames(df.LFQ.log2) <- fn_short
+
+
+paletteLength <- 20
+
+myColor <- colorRampPalette(c("navy", "white",
+                                  "firebrick3"))(paletteLength)
+pheatmap(as.matrix(na.omit(df.LFQ.log2)),
+         color = myColor,
+         treeheight_row = 10,
+         angle_col ="90",
+         treeheight_col = 10,
+         legend = TRUE,
+         labels_col = colnames(df.LFQ.log2),
+         show_rownames = FALSE)
+```
+
+
+
+
+
+
 # l-428
 
 ## Control
@@ -1963,7 +2890,7 @@ X_t <- t(X.cc)
 # -------------------------
 # 2) PCA
 # -------------------------
-pca <- prcomp(X_t, center = TRUE, scale. = TRUE)
+pca <- prcomp(X_t, center = TRUE, scale. = FALSE)
 
 # variance explained
 pvar <- (pca$sdev^2) / sum(pca$sdev^2)
@@ -2182,7 +3109,7 @@ X_t <- t(X.cc)
 # -------------------------
 # 2) PCA
 # -------------------------
-pca <- prcomp(X_t, center = TRUE, scale. = TRUE)
+pca <- prcomp(X_t, center = TRUE, scale. = FALSE)
 
 # variance explained
 pvar <- (pca$sdev^2) / sum(pca$sdev^2)
@@ -2401,7 +3328,7 @@ X_t <- t(X.cc)
 # -------------------------
 # 2) PCA
 # -------------------------
-pca <- prcomp(X_t, center = TRUE, scale. = TRUE)
+pca <- prcomp(X_t, center = TRUE, scale. = FALSE)
 
 # variance explained
 pvar <- (pca$sdev^2) / sum(pca$sdev^2)
@@ -2621,7 +3548,7 @@ X_t <- t(X.cc)
 # -------------------------
 # 2) PCA
 # -------------------------
-pca <- prcomp(X_t, center = TRUE, scale. = TRUE)
+pca <- prcomp(X_t, center = TRUE, scale. = FALSE)
 
 # variance explained
 pvar <- (pca$sdev^2) / sum(pca$sdev^2)
@@ -2762,3 +3689,552 @@ ggplot(ta_long, aes(x = Rank, y = log2_Intensity, color = Group)) +
   theme_minimal()
 
 ```
+
+## Compare All
+
+```{r}
+df <- read.csv("./results_maxquant/hl428_all_galaxy.txt", sep = "\t")
+df.prot <- df
+
+# Remove reverse/contaminant/site-only identifications
+df.prot <- df.prot[!df.prot$Reverse == "+", ]
+df.prot <- df.prot[!df.prot$Potential.contaminant == "+", ]
+df.prot <- df.prot[!df.prot$Only.identified.by.site == "+", ]
+
+df.prot[df.prot == 0] <- NA
+
+```
+
+### CV calculation
+
+```{r}
+df.LFQ <- df.prot[,c(500:523,
+                     524:547,
+                     572:586, 588:595,
+                     548:571)]
+
+n <- ncol(df.LFQ)
+
+block_sizes <- c(9, 6, 9, 
+                 9, 6, 9,
+                 9, 6, 8,
+                 9, 6, 9)
+
+if (sum(block_sizes) != n) stop("block sizes do not match column number")
+
+ends <- cumsum(block_sizes)
+starts <- c(1, head(ends, -1) + 1)
+
+starts
+ends
+
+# generate df mean
+df_mean <- as.data.frame(
+  sapply(seq_along(starts),
+         function(i) rowMeans(df.LFQ[, starts[i]:ends[i], drop = FALSE], na.rm = TRUE))
+)
+
+# col names
+colnames(df_mean) <- paste0("block", seq_along(starts))
+
+# calculate cv per biological replicate
+cv_fun <- function(x) {
+  # falls mean == 0 -> NA vermeiden
+  m <- mean(x, na.rm = TRUE)
+  if (is.na(m) || m == 0) return(NA_real_)
+  sd(x, na.rm = TRUE) / m
+}
+# define pairs
+pairs <- list(c(1,2,3), c(4,5,6), c(7,8,9), c(10,11,12))
+# check if columns exist
+pairs <- Filter(function(cols) all(cols <= ncol(df_mean)), pairs)
+
+# rowwise cv
+cv_rowwise <- sapply(pairs, function(cols) {
+  apply(df_mean[, cols, drop = FALSE], 1, function(x) cv_fun(x))
+})
+cv_rowwise <- as.data.frame(cv_rowwise)
+# name columns
+colnames(cv_rowwise) <- c("Control", "Etoposide", "RE", "Resveratrol")[seq_along(pairs)]
+
+# long format for plotting
+cv_long <- pivot_longer(as.data.frame(cv_rowwise),
+                        cols = everything(),
+                        names_to = "Treatment",
+                        values_to = "cv")
+
+ggplot(cv_long, aes(x = Treatment, y = cv)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(
+    x = "Spaltenpaar",
+    y = "CV"
+    )
+
+
+colMeans(cv_rowwise*100, na.rm = TRUE)
+apply(cv_rowwise*100, 2, median, na.rm = TRUE)
+
+
+result_list <- lapply(colnames(cv_rowwise), function(col) {
+  
+  cv_values <- cv_rowwise[[col]]
+  
+  data.frame(
+    Group = col,
+    Median_CV = median(cv_values, na.rm = TRUE),
+    IQR_CV = IQR(cv_values, na.rm = TRUE),
+    Range_CV = max(cv_values, na.rm = TRUE) - min(cv_values, na.rm = TRUE),
+    CV_lt_10 = mean(cv_values < 0.1, na.rm = TRUE) * 100,
+    CV_lt_20 = mean(cv_values < 0.2, na.rm = TRUE) * 100,
+    CV_gt_30 = mean(cv_values > 0.3, na.rm = TRUE) * 100
+  )
+})
+
+summary_df <- do.call(rbind, result_list)
+summary_df
+```
+
+### PCA 
+
+#### per biological replicate
+
+```{r}
+
+df.LFQ <- df.prot[,c(500:523,
+                     524:547,
+                     572:586, 588:595,
+                     548:571)]
+
+
+df.LFQ <- log2(df.LFQ)
+fn <- colnames(df.LFQ)
+
+# shorten filenames
+fn_short <- sub("^LFQ\\.intensity\\.", "", fn)
+fn_short <- sub("^.*HL_428_", "", fn_short)
+fn_short <- sub("\\.raw\\.thermo\\.raw$", "", fn_short)
+fn_short
+# rename them
+colnames(df.LFQ) <- fn_short
+
+
+mat <- df.LFQ[,c(1:9,
+                 34:39,
+                 58:63,
+                 72:80)]
+
+mat <- as.data.frame(lapply(mat, as.numeric))
+mat <- mat[rowSums(!is.na(mat)) > 0, , drop = FALSE]
+mat_cc <- mat[complete.cases(mat), , drop = FALSE]
+v <- apply(mat_cc, 1, var)
+mat_cc <- mat_cc[v > 0, , drop = FALSE]
+pca_res <- prcomp(t(mat_cc), center = TRUE, scale. = FALSE)
+
+# plot it
+scores <- as.data.frame(pca_res$x)
+scores$Filename <- rownames(scores)
+
+
+plot_ly(
+  scores,
+  x = ~PC1, 
+  y = ~PC2,
+  type = "scatter",
+  mode = "markers+text",        
+  text = ~Filename,
+  textposition = "top center", 
+  marker = list(size = 10)
+) %>%
+  plotly::layout(
+    xaxis = list(title = paste0("PC1 (", 
+                                round(summary(pca_res)$importance[2,1] * 100, 1), "%)")),
+    yaxis = list(title = paste0("PC2 (", 
+                                round(summary(pca_res)$importance[2,2] * 100, 1), "%)"))
+  )
+
+
+
+
+
+```
+
+```{r}
+
+df.LFQ <- df.prot[,c(500:523,
+                     524:547,
+                     572:586, 588:595,
+                     548:571)]
+
+
+df.LFQ <- log2(df.LFQ)
+fn <- colnames(df.LFQ)
+
+# shorten filenames
+fn_short <- sub("^LFQ\\.intensity\\.", "", fn)
+fn_short <- sub("^.*HL_428_", "", fn_short)
+fn_short <- sub("\\.raw\\.thermo\\.raw$", "", fn_short)
+fn_short
+# rename them
+colnames(df.LFQ) <- fn_short
+
+
+mat <- df.LFQ[,c(10:15,
+                 34:39,
+                 58:63,
+                 81:86)]
+
+mat <- as.data.frame(lapply(mat, as.numeric))
+mat <- mat[rowSums(!is.na(mat)) > 0, , drop = FALSE]
+mat_cc <- mat[complete.cases(mat), , drop = FALSE]
+v <- apply(mat_cc, 1, var)
+mat_cc <- mat_cc[v > 0, , drop = FALSE]
+pca_res <- prcomp(t(mat_cc), center = TRUE, scale. = FALSE)
+
+# plot it
+scores <- as.data.frame(pca_res$x)
+scores$Filename <- rownames(scores)
+
+
+plot_ly(
+  scores,
+  x = ~PC1, 
+  y = ~PC2,
+  type = "scatter",
+  mode = "markers+text",        
+  text = ~Filename,
+  textposition = "top center", 
+  marker = list(size = 10)
+) %>%
+  plotly::layout(
+    xaxis = list(title = paste0("PC1 (", 
+                                round(summary(pca_res)$importance[2,1] * 100, 1), "%)")),
+    yaxis = list(title = paste0("PC2 (", 
+                                round(summary(pca_res)$importance[2,2] * 100, 1), "%)"))
+  )
+
+
+
+
+
+```
+
+```{r}
+
+df.LFQ <- df.prot[,c(500:523,
+                     524:547,
+                     572:586, 588:595,
+                     548:571)]
+
+
+df.LFQ <- log2(df.LFQ)
+fn <- colnames(df.LFQ)
+
+# shorten filenames
+fn_short <- sub("^LFQ\\.intensity\\.", "", fn)
+fn_short <- sub("^.*HL_428_", "", fn_short)
+fn_short <- sub("\\.raw\\.thermo\\.raw$", "", fn_short)
+fn_short
+# rename them
+colnames(df.LFQ) <- fn_short
+
+
+mat <- df.LFQ[,c(16:24,
+                 40:48,
+                 54:71,
+                 87:95)]
+
+mat <- as.data.frame(lapply(mat, as.numeric))
+mat <- mat[rowSums(!is.na(mat)) > 0, , drop = FALSE]
+mat_cc <- mat[complete.cases(mat), , drop = FALSE]
+v <- apply(mat_cc, 1, var)
+mat_cc <- mat_cc[v > 0, , drop = FALSE]
+pca_res <- prcomp(t(mat_cc), center = TRUE, scale. = FALSE)
+
+# plot it
+scores <- as.data.frame(pca_res$x)
+scores$Filename <- rownames(scores)
+
+
+plot_ly(
+  scores,
+  x = ~PC1, 
+  y = ~PC2,
+  type = "scatter",
+  mode = "markers+text",        
+  text = ~Filename,
+  textposition = "top center", 
+  marker = list(size = 10)
+) %>%
+  plotly::layout(
+    xaxis = list(title = paste0("PC1 (", 
+                                round(summary(pca_res)$importance[2,1] * 100, 1), "%)")),
+    yaxis = list(title = paste0("PC2 (", 
+                                round(summary(pca_res)$importance[2,2] * 100, 1), "%)"))
+  )
+
+
+
+
+
+```
+
+#### all
+
+```{r}
+
+df.LFQ <- df.prot[,c(500:523,
+                     524:547,
+                     572:586, 588:595,
+                     548:571)]
+
+
+df.LFQ <- log2(df.LFQ)
+fn <- colnames(df.LFQ)
+
+# shorten filenames
+fn_short <- sub("^LFQ\\.intensity\\.", "", fn)
+fn_short <- sub("^.*HL_428_", "", fn_short)
+fn_short <- sub("\\.raw\\.thermo\\.raw$", "", fn_short)
+fn_short
+# rename them
+colnames(df.LFQ) <- fn_short
+
+
+mat <- df.LFQ
+mat <- as.data.frame(lapply(mat, as.numeric))
+mat <- mat[rowSums(!is.na(mat)) > 0, , drop = FALSE]
+mat_cc <- mat[complete.cases(mat), , drop = FALSE]
+v <- apply(mat_cc, 1, var)
+mat_cc <- mat_cc[v > 0, , drop = FALSE]
+pca_res <- prcomp(t(mat_cc), center = TRUE, scale. = FALSE)
+
+# plot it
+scores <- as.data.frame(pca_res$x)
+scores$Filename <- rownames(scores)
+
+
+plot_ly(
+  scores,
+  x = ~PC1, 
+  y = ~PC2,
+  type = "scatter",
+  mode = "markers+text",        
+  text = ~Filename,
+  textposition = "top center", 
+  marker = list(size = 10)
+) %>%
+  plotly::layout(
+    xaxis = list(title = paste0("PC1 (", 
+                                round(summary(pca_res)$importance[2,1] * 100, 1), "%)")),
+    yaxis = list(title = paste0("PC2 (", 
+                                round(summary(pca_res)$importance[2,2] * 100, 1), "%)"))
+  )
+
+
+
+
+
+```
+
+#### pooled measuring replicates
+
+```{r}
+
+df.LFQ <- df.prot[,c(500:523,
+                     524:547,
+                     572:586, 588:595,
+                     548:571)]
+
+
+df.LFQ <- log2(df.LFQ)
+fn <- colnames(df.LFQ)
+
+# shorten filenames
+fn_short <- sub("^LFQ\\.intensity\\.", "", fn)
+fn_short <- sub("^.*HL_428_", "", fn_short)
+fn_short <- sub("\\.raw\\.thermo\\.raw$", "", fn_short)
+fn_short
+# rename them
+colnames(df.LFQ) <- fn_short
+
+n <- ncol(df.LFQ)
+
+groups <- list()
+
+# 1–63 in 3er-Schritten
+for(i in seq(1, 63, by = 3)){
+  groups[[length(groups)+1]] <- i:(i+2)
+}
+
+# 2er-Gruppe 64–65
+groups[[length(groups)+1]] <- 64:65
+
+# Rest wieder 3er
+for(i in seq(66, n, by = 3)){
+  groups[[length(groups)+1]] <- i:(i+2)
+}
+
+# Mittelwerte berechnen
+df.mean <- sapply(groups, function(idx){
+  rowMeans(df.LFQ[, idx], na.rm = TRUE)
+})
+
+# Spaltennamen = jeweils Name der ersten Spalte der Gruppe
+colnames(df.mean) <- colnames(df.LFQ)[sapply(groups, `[`, 1)]
+
+df.mean <- as.data.frame(df.mean)
+
+mat <- df.mean
+mat <- as.data.frame(lapply(mat, as.numeric))
+mat <- mat[rowSums(!is.na(mat)) > 0, , drop = FALSE]
+mat_cc <- mat[complete.cases(mat), , drop = FALSE]
+v <- apply(mat_cc, 1, var)
+mat_cc <- mat_cc[v > 0, , drop = FALSE]
+pca_res <- prcomp(t(mat_cc), center = TRUE, scale. = FALSE)
+
+# plot it
+scores <- as.data.frame(pca_res$x)
+scores$Filename <- rownames(scores)
+
+
+plot_ly(
+  scores,
+  x = ~PC1, 
+  y = ~PC2,
+  type = "scatter",
+  mode = "markers+text",        
+  text = ~Filename,
+  textposition = "top center", 
+  marker = list(size = 10)
+) %>%
+  plotly::layout(
+    xaxis = list(title = paste0("PC1 (", 
+                                round(summary(pca_res)$importance[2,1] * 100, 1), "%)")),
+    yaxis = list(title = paste0("PC2 (", 
+                                round(summary(pca_res)$importance[2,2] * 100, 1), "%)"))
+  )
+
+
+
+
+
+```
+
+
+
+
+
+
+
+#### pooled biological replicates
+
+```{r}
+
+df.LFQ <- df.prot[,c(500:523,
+                     524:547,
+                     572:586, 588:595,
+                     548:571)]
+
+
+df.LFQ <- log2(df.LFQ)
+fn <- colnames(df.LFQ)
+
+# shorten filenames
+fn_short <- sub("^LFQ\\.intensity\\.", "", fn)
+fn_short <- sub("^.*HL_428_", "", fn_short)
+fn_short <- sub("\\.raw\\.thermo\\.raw$", "", fn_short)
+fn_short
+# rename them
+colnames(df.LFQ) <- fn_short
+
+### replicate level
+n <- ncol(df.LFQ)
+
+block_sizes <- c(9, 6, 9, 
+                 9, 6, 9,
+                 9, 6, 8,
+                 9, 6, 9)
+ends <- cumsum(block_sizes)
+starts <- c(1, head(ends, -1) + 1)
+
+df_mean <- as.data.frame(
+  sapply(seq_along(starts),
+         function(i) rowMeans(df.LFQ[, starts[i]:ends[i], drop = FALSE], na.rm = TRUE))
+)
+
+colnames(df_mean) <- colnames(df.LFQ)[starts]
+
+mat <- df_mean
+mat <- as.data.frame(lapply(mat, as.numeric))
+mat <- mat[rowSums(!is.na(mat)) > 0, , drop = FALSE]
+mat_cc <- mat[complete.cases(mat), , drop = FALSE]
+v <- apply(mat_cc, 1, var)
+mat_cc <- mat_cc[v > 0, , drop = FALSE]
+pca_res <- prcomp(t(mat_cc), center = TRUE, scale. = FALSE)
+
+# plot it
+scores <- as.data.frame(pca_res$x)
+scores$Filename <- rownames(scores)
+
+
+plot_ly(
+  scores,
+  x = ~PC1, 
+  y = ~PC2,
+  type = "scatter",
+  mode = "markers+text",        
+  text = ~Filename,
+  textposition = "top center", 
+  marker = list(size = 10)
+) %>%
+  plotly::layout(
+    xaxis = list(title = paste0("PC1 (", 
+                                round(summary(pca_res)$importance[2,1] * 100, 1), "%)")),
+    yaxis = list(title = paste0("PC2 (", 
+                                round(summary(pca_res)$importance[2,2] * 100, 1), "%)"))
+  )
+
+
+
+
+
+```
+
+
+
+
+
+### Heatmap
+
+```{r}
+# ensure numeric matrix
+df.LFQ.log2 <- as.data.frame(lapply(df.LFQ, as.numeric))
+
+# replace ±Inf with NA
+df.LFQ.log2[is.infinite(as.matrix(df.LFQ.log2))] <- NA
+
+# remove rows containing only NA values
+df.LFQ.log2 <- df.LFQ.log2[rowSums(is.na(df.LFQ.log2)) < ncol(df.LFQ.log2), ]
+
+# shorten col names
+colnames(df.LFQ.log2) <- fn_short
+
+
+paletteLength <- 20
+
+myColor <- colorRampPalette(c("navy", "white",
+                                  "firebrick3"))(paletteLength)
+pheatmap(as.matrix(na.omit(df.LFQ.log2)),
+         color = myColor,
+         treeheight_row = 10,
+         angle_col ="90",
+         treeheight_col = 10,
+         legend = TRUE,
+         labels_col = colnames(df.LFQ.log2),
+         show_rownames = FALSE)
+```
+
+
+
+
